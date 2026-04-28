@@ -9,3 +9,4 @@ streamlit-folium>=0.18
 groq==0.4.2
 openpyxl>=3.1
 requests>=2.31
+matplotlib>=3.8
