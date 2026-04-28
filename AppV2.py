@@ -1699,7 +1699,7 @@ with transition_tab:
                     .format({"Carbon_Burden":"{:.2%}","EBITDA_Margin":"{:.2%}","DSCR":"{:.2f}",
                               "PD_Transition":"{:.3%}","ECL_Transition":"{:.1f}",
                               "Stranded_Assets":"{:.0f}","CAPEX_Gap":"{:.0f}"})
-                    .applymap(_color_pd,subset=["PD_Transition"])
+                    .map(_color_pd, subset=["PD_Transition"])
                     .background_gradient(subset=["ECL_Transition"],cmap="Reds")
                     .set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
                 use_container_width=True, hide_index=True
