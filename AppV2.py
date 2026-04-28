@@ -112,7 +112,35 @@ from plotly.subplots import make_subplots
 
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
+# ============================================================
+# GIS FILE LOADER — downloads large files from cloud storage
+# on first run so they don't need to be in the GitHub repo
+# ============================================================
+import os, urllib.request
 
+GCS_BASE = "https://storage.googleapis.com/iccre-gis-data"  # ← your bucket name
+
+_GIS_FILES = {
+    "Data/floodMapGL_rp100y.tif":        f"{GCS_BASE}/floodMapGL_rp100y.tif",
+    "Data/ibtracs.NI.list.v04r01.csv":   f"{GCS_BASE}/ibtracs.NI.list.v04r01.csv",
+    "Data/era5_test_day_grid.csv":        f"{GCS_BASE}/era5_test_day_grid.csv",
+}
+
+@st.cache_resource(show_spinner="⏳ Loading physical risk data (one-time, ~30s)...")
+def _ensure_gis_files():
+    os.makedirs("Data", exist_ok=True)
+    failed = []
+    for local_path, url in _GIS_FILES.items():
+        if not os.path.exists(local_path):
+            try:
+                urllib.request.urlretrieve(url, local_path)
+            except Exception as e:
+                failed.append(f"{local_path}: {e}")
+    return failed
+
+_gis_missing = _ensure_gis_files()
+if _gis_missing:
+    st.sidebar.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
 # ============================================================
 # DESIGN SYSTEM  (UI-01)
 # ============================================================
