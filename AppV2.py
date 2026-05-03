@@ -98,6 +98,7 @@ import numpy as np
 import os, json
 import urllib.request
 from groq import Groq
+from math import radians, sin, cos, asin, sqrt
 
 # Rasterio is required only for the Physical Risk flood layer.
 # Keeping this import guarded prevents the full app from failing during deployment
@@ -195,9 +196,6 @@ def _ensure_gis_files():
                 failed.append(f"{local_path}: {e}")
     return failed
 
-_gis_missing = _ensure_gis_files()
-if _gis_missing:
-    st.sidebar.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
 if RASTERIO_IMPORT_ERROR:
     st.sidebar.warning("⚠️ Rasterio failed to import. Flood layer will be disabled, but other modules can still run.")
 # ============================================================
@@ -859,9 +857,9 @@ st.sidebar.markdown(
 )
 
 demo_col1, demo_col2 = st.sidebar.columns(2)
-load_demo = demo_col1.button("🎬 Load Demo", use_container_width=True,
+load_demo = demo_col1.button("🎬 Load Demo", width="stretch",
     help="Load Bharat Steel Industries Ltd — a pre-configured demo that produces compelling, realistic output in one click.")
-clear_demo = demo_col2.button("🗑️ Reset", use_container_width=True,
+clear_demo = demo_col2.button("🗑️ Reset", width="stretch",
     help="Clear all results and inputs.")
 
 if load_demo:
@@ -1231,7 +1229,7 @@ if any_ran:
             data=xlsx_bytes,
             file_name=f"ICCRE_{company_name.replace(' ','_')}_{REPORTING_YEAR}_{datetime.utcnow().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
             help="Downloads all results, assumptions, and model governance in a multi-sheet Excel workbook",
         )
     else:
@@ -1258,7 +1256,7 @@ if any_ran:
         data=_json.dumps(_export_payload, indent=2, default=str).encode(),
         file_name=f"ICCRE_{company_name.replace(' ','_')}_{REPORTING_YEAR}.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
         help="Lightweight JSON export of key results and assumptions",
     )
 else:
@@ -1603,7 +1601,7 @@ with dashboard_tab:
                 fig_spark.update_layout(**_chart_layout("Transition PD Trajectory — All Scenarios",260))
                 fig_spark.update_yaxes(tickformat=".1%")
                 _ax_style(fig_spark)
-                st.plotly_chart(fig_spark,use_container_width=True)
+                st.plotly_chart(fig_spark,width="stretch")
 
             with col_gauge:
                 if pd_t is not None:
@@ -1627,7 +1625,7 @@ with dashboard_tab:
                         title={"text":"Peak PD","font":{"color":C["slate"],"size":12}}
                     ))
                     fig_g.update_layout(height=200,paper_bgcolor=C["bg_dark"],margin=dict(l=10,r=10,t=30,b=10))
-                    st.plotly_chart(fig_g,use_container_width=True)
+                    st.plotly_chart(fig_g,width="stretch")
 
         # BRSR + Physical summary row
         if brsr_ran or physical_ran:
@@ -1753,7 +1751,7 @@ with transition_tab:
                     .map(_color_pd, subset=["PD_Transition"])
                     .background_gradient(subset=["ECL_Transition"],cmap="Reds")
                     .set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-                use_container_width=True, hide_index=True
+                width="stretch", hide_index=True
             )
 
             # Headline KPIs
@@ -1773,7 +1771,7 @@ with transition_tab:
             fig_pd.update_layout(**_chart_layout("PD Trajectory by NGFS Scenario",320))
             fig_pd.update_yaxes(tickformat=".1%")
             _ax_style(fig_pd)
-            st.plotly_chart(fig_pd,use_container_width=True)
+            st.plotly_chart(fig_pd,width="stretch")
 
             fig_ecl = go.Figure()
             for scen in df_transition["Scenario"].unique():
@@ -1782,7 +1780,7 @@ with transition_tab:
                     marker_color=_scen_color(scen),opacity=0.85))
             fig_ecl.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr) — All Scenarios",300),barmode="group")
             _ax_style(fig_ecl)
-            st.plotly_chart(fig_ecl,use_container_width=True)
+            st.plotly_chart(fig_ecl,width="stretch")
 
             fig_dscr = go.Figure()
             for scen in df_transition["Scenario"].unique():
@@ -1795,7 +1793,7 @@ with transition_tab:
                 annotation_text="1.5× threshold",annotation_font_color=C["amber"])
             fig_dscr.update_layout(**_chart_layout("DSCR Stress Trajectory",300))
             _ax_style(fig_dscr)
-            st.plotly_chart(fig_dscr,use_container_width=True)
+            st.plotly_chart(fig_dscr,width="stretch")
 
             st.success("✅ Transition Risk Engine v1.1 executed")
             log_model_run("Transition",{"company":company_name,"sector":sector,
@@ -1812,6 +1810,10 @@ with physical_tab:
     if not st.session_state.get("enable_physical",False):
         st.info("Enable **Physical Risk** in the sidebar.")
     else:
+        _gis_missing = _ensure_gis_files()
+        if _gis_missing:
+            st.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
+
         with st.expander("📐 Methodology: v1.2 corrections",expanded=False):
             st.markdown("""
             **v1.1 (old):** `proj_loss = TOTAL_REV_LOSS × (1 + 0.25 × ΔT)` — flat multiplier, no citation.
@@ -1831,7 +1833,7 @@ with physical_tab:
             "latitude":[22.80,23.55,20.32],"longitude":[86.20,87.32,86.61],
             "revenue_inr_cr":[3500.0,2000.0,1200.0],
             "base_pd":[0.015,0.015,0.015],"lgd":[0.45,0.45,0.45],
-        }),num_rows="dynamic",use_container_width=True)
+        }),num_rows="dynamic",width="stretch")
 
         fc1,fc2 = st.columns(2)
         EBITDA_MARGIN_PHYS = float(fc1.number_input("EBITDA Margin",value=float(ebitda_margin_0),step=0.01,key="phys_em"))
@@ -1887,7 +1889,7 @@ with physical_tab:
 
                 # Cyclone
                 try:
-                    cyc=pd.read_csv(r"Data/ibtracs.NI.list.v04r01.csv")[["LAT","LON","USA_WIND"]]
+                    cyc=pd.read_csv(r"Data/ibtracs.NI.list.v04r01.csv", low_memory=False)[["LAT","LON","USA_WIND"]]
                     cyc=cyc.apply(pd.to_numeric,errors="coerce").dropna()
                     cyc["wind_kmh"]=cyc["USA_WIND"]*1.852
                 except: cyc=pd.DataFrame(columns=["LAT","LON","wind_kmh"])
@@ -1944,7 +1946,7 @@ with physical_tab:
                 colorbar=dict(title="Risk Score"),zmin=0,zmax=100))
             fig_hm.update_layout(**_chart_layout("Hazard Vulnerability Scores by Asset (0=none, 100=max)",max(220,len(df)*45+80)))
             _ax_style(fig_hm)
-            st.plotly_chart(fig_hm,use_container_width=True)
+            st.plotly_chart(fig_hm,width="stretch")
 
             # Revenue loss stacked bar
             st.subheader("💸 Revenue Loss by Hazard")
@@ -1956,7 +1958,7 @@ with physical_tab:
                 if haz in df.columns:
                     fig_rev.add_trace(go.Bar(x=df["asset_id"],y=df[haz].fillna(0),name=col,marker_color=clr))
             fig_rev.update_layout(**_chart_layout("Revenue Loss Decomposition by Hazard (₹ Cr)",300),barmode="stack")
-            _ax_style(fig_rev); st.plotly_chart(fig_rev,use_container_width=True)
+            _ax_style(fig_rev); st.plotly_chart(fig_rev,width="stretch")
 
             # NGFS scenario fan charts (PHYS-01)
             if not df_phys_proj.empty:
@@ -1984,7 +1986,7 @@ with physical_tab:
                         fig_f.add_trace(go.Bar(x=ds["Year"],y=ds["Chronic_Loss_Cr"],name="Chronic",marker_color=C["accent3"]),row=2,col=2)
                         fig_f.add_trace(go.Bar(x=ds["Year"],y=ds["Acute_Loss_Cr"],name="Acute",marker_color=C["coral"]),row=2,col=2)
                         fig_f.update_layout(**_chart_layout(f"{scen} — Physical Risk Projections",480),barmode="stack")
-                        _ax_style(fig_f,rows=2,cols=2); st.plotly_chart(fig_f,use_container_width=True)
+                        _ax_style(fig_f,rows=2,cols=2); st.plotly_chart(fig_f,width="stretch")
                         wr=ds.loc[ds["PD_Physical"].idxmax()]
                         c1p,c2p,c3p,c4p=st.columns(4)
                         c1p.metric("Worst Year",f"{int(wr['Year'])}"); c2p.metric("Peak Rev Loss",f"₹{wr['Revenue_Loss_P50_Cr']:.1f} Cr")
@@ -2120,7 +2122,7 @@ with targets_tab:
                 with col_r1:
                     st.markdown(f"<h4 style='color:{C['accent2']};'>Financial Target Effectiveness</h4>",unsafe_allow_html=True)
                     st.dataframe(eff.style.format({"PD_Target_Max":"{:.3%}","PD_Base_Max":"{:.3%}","PD_Reduction_%":"{:.1f}%"})
-                        .background_gradient(subset=["PD_Reduction_%"],cmap="Greens"),use_container_width=True,hide_index=True)
+                        .background_gradient(subset=["PD_Reduction_%"],cmap="Greens"),width="stretch",hide_index=True)
 
                 with col_r2:
                     if brsr_ran_t and len(current_flags) > 0:
@@ -2135,7 +2137,7 @@ with targets_tab:
                         fig_brsr_tgt.update_layout(**_chart_layout("BRSR PD Uplift Reduction (bps)", 260),
                             yaxis_title="Basis Points")
                         _ax_style(fig_brsr_tgt)
-                        st.plotly_chart(fig_brsr_tgt, use_container_width=True)
+                        st.plotly_chart(fig_brsr_tgt, width="stretch")
 
                 # Baseline vs target PD chart
                 df_plot=df_base.merge(df_tgt,on=["Scenario","Year"],how="inner")
@@ -2157,7 +2159,7 @@ with targets_tab:
                 fig_tgt.update_layout(**_chart_layout("PD — Baseline vs Financial Target vs Integrated (+ BRSR) Target", 340))
                 fig_tgt.update_yaxes(tickformat=".1%")
                 _ax_style(fig_tgt)
-                st.plotly_chart(fig_tgt, use_container_width=True)
+                st.plotly_chart(fig_tgt, width="stretch")
 
                 if brsr_ran_t:
                     st.caption(f"**BRSR note:** Target renewable share {tgt_renewable}%, target coverage {tgt_coverage}%, target hazardous waste {tgt_hazwaste}%. These resolve {len(current_flags)-len(brsr_remaining_flags)} of {len(current_flags)} current BRSR flags, reducing PD uplift from +{current_brsr_pd*10000:.0f} bps to +{brsr_target_uplift*10000:.0f} bps. The dotted 'BRSR Target' line includes this reduction.")
@@ -2314,7 +2316,7 @@ with integrated_tab:
                     textinfo="label+percent",hovertemplate="%{label}: ₹%{value:.1f} Cr<extra></extra>"))
                 fig_dec.update_layout(**_chart_layout("ECL Risk Decomposition",280),showlegend=False,
                     annotations=[dict(text=f"₹{ecl_integrated:.1f}Cr",x=0.5,y=0.5,font_size=14,font_color=C["white"],showarrow=False)])
-                st.plotly_chart(fig_dec,use_container_width=True)
+                st.plotly_chart(fig_dec,width="stretch")
         with dec_col2:
             if transition_ran_i:
                 df_ti3=st.session_state.get("df_transition")
@@ -2326,7 +2328,7 @@ with integrated_tab:
                             y=[ds["PD_Transition"].max()*100,ds["ECL_Transition"].max()/EAD*100,max(0,(1.5-ds["DSCR"].min())/1.5*100)],
                             name=scen[:25],marker_color=_scen_color(scen)))
                     fig_sc.update_layout(**_chart_layout("Risk Metrics by Scenario (normalised %)",280),barmode="group",yaxis_title="%")
-                    _ax_style(fig_sc); st.plotly_chart(fig_sc,use_container_width=True)
+                    _ax_style(fig_sc); st.plotly_chart(fig_sc,width="stretch")
 
         # ── GAUSSIAN COPULA METHODOLOGY TRANSPARENCY ──
         if exec_mode=="combined":
@@ -2370,7 +2372,7 @@ with integrated_tab:
                              "Stranded (₹Cr)":"{:.0f}","CAPEX Gap (₹Cr)":"{:.0f}"})
                     .background_gradient(subset=["Peak PD"],cmap="Reds")
                     .background_gradient(subset=["Min DSCR"],cmap="RdYlGn"),
-                    use_container_width=True,hide_index=True)
+                    width="stretch",hide_index=True)
 
         # ── ICAAP SUMMARY ──
         st.subheader("🏦 ICAAP Capital Assessment")
@@ -2397,7 +2399,7 @@ with integrated_tab:
             {"Metric":"CAPEX Gap (₹ Cr)","Value":f"{capex_t:.0f}" if capex_t else "—","ISSB S2":"§14"},
         ])
         st.dataframe(df_isummary.style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-            use_container_width=True,hide_index=True)
+            width="stretch",hide_index=True)
 
         st.session_state["df_integrated_summary"]=df_isummary
         st.session_state["integrated_ran"]=True
@@ -2449,7 +2451,7 @@ with integrated_tab:
             fig_mc.add_vline(x=ecl_95,line_dash="dash",line_color=C["coral"],annotation_text=f"VaR 95%: {ecl_95:.1f}",row=1,col=1)
             fig_mc.add_trace(go.Scatter(x=pd_sim,y=ecl_sim,mode="markers",marker=dict(color=C["accent3"],size=3,opacity=0.3),name="Simulation"),row=1,col=2)
             fig_mc.update_layout(**_chart_layout("Monte Carlo Results",320)); _ax_style(fig_mc,rows=1,cols=2)
-            st.plotly_chart(fig_mc,use_container_width=True)
+            st.plotly_chart(fig_mc,width="stretch")
             st.session_state["mc_results"]={"Mean_PD":pd_mean,"PD_95":pd_95,"Mean_ECL":ecl_mean,"ECL_95":ecl_95,"Climate_Capital_VaR":ecl_95}
             log_model_run("MonteCarlo",{"company":company_name,"pd_mean":pd_mean,"pd_95":pd_95,"ecl_95":ecl_95})
 
@@ -2515,7 +2517,7 @@ with plots_tab:
                     fig.update_layout(**_chart_layout("Probability of Default — All Scenarios", 300))
                     fig.update_yaxes(tickformat=".1%")
                     _ax_style(fig)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                 with col2:
                     fig = go.Figure()
@@ -2526,7 +2528,7 @@ with plots_tab:
                             hovertemplate="Year: %{x}<br>ECL: ₹%{y:.1f} Cr<extra>" + scen[:18] + "</extra>"))
                     fig.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr)", 300), barmode="group")
                     _ax_style(fig)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                 # Row 2: DSCR + Carbon Burden
                 col3, col4 = st.columns(2)
@@ -2543,7 +2545,7 @@ with plots_tab:
                         annotation_text="1.5× threshold", annotation_font_color=C["amber"])
                     fig.update_layout(**_chart_layout("DSCR Stress Trajectory", 300))
                     _ax_style(fig)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                 with col4:
                     fig = go.Figure()
@@ -2556,7 +2558,7 @@ with plots_tab:
                     fig.update_layout(**_chart_layout("Carbon Burden (% of Revenue)", 300))
                     fig.update_yaxes(ticksuffix="%")
                     _ax_style(fig)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                 # Row 3: EBITDA Margin + Stranded Assets + CAPEX Gap (3-panel subplot)
                 fig3 = make_subplots(rows=1, cols=3,
@@ -2576,7 +2578,7 @@ with plots_tab:
                     legend_override=dict(orientation="h", y=1.12)))
                 _ax_style(fig3, rows=1, cols=3)
                 fig3.update_yaxes(ticksuffix="%", row=1, col=1)
-                st.plotly_chart(fig3, use_container_width=True)
+                st.plotly_chart(fig3, width="stretch")
 
                 # Row 4: Carbon burden vs EBITDA scatter
                 fig_sc = go.Figure()
@@ -2592,7 +2594,7 @@ with plots_tab:
                 fig_sc.update_layout(**_chart_layout("Carbon Burden vs EBITDA Margin — Stress Path", 300))
                 fig_sc.update_xaxes(title="Carbon Burden (%)"); fig_sc.update_yaxes(title="EBITDA Margin (%)")
                 _ax_style(fig_sc)
-                st.plotly_chart(fig_sc, use_container_width=True)
+                st.plotly_chart(fig_sc, width="stretch")
 
         # ── SECTION 2: TARGETS COMPARISON ──────────────────────────────
         if tg_ran:
@@ -2615,7 +2617,7 @@ with plots_tab:
                     fig_tp.update_layout(**_chart_layout("PD — Baseline vs Target", 300))
                     fig_tp.update_yaxes(tickformat=".1%")
                     _ax_style(fig_tp)
-                    st.plotly_chart(fig_tp, use_container_width=True)
+                    st.plotly_chart(fig_tp, width="stretch")
 
                 with tc2:
                     fig_te = go.Figure()
@@ -2627,7 +2629,7 @@ with plots_tab:
                             name=f"{scen[:18]} Target", line=dict(color=clr, width=2.5), marker=dict(size=6)))
                     fig_te.update_layout(**_chart_layout("ECL — Baseline vs Target (₹ Cr)", 300))
                     _ax_style(fig_te)
-                    st.plotly_chart(fig_te, use_container_width=True)
+                    st.plotly_chart(fig_te, width="stretch")
 
                 # BRSR target comparison if available
                 if b_ran and "brsr_target_uplift" in st.session_state:
@@ -2642,7 +2644,7 @@ with plots_tab:
                     fig_bt.update_layout(**_chart_layout(f"BRSR PD Uplift: {curr_up:.0f} → {tgt_up:.0f} bps (−{reduction:.0f} bps reduction)", 250),
                         barmode="group", yaxis_title="Basis Points")
                     _ax_style(fig_bt)
-                    st.plotly_chart(fig_bt, use_container_width=True)
+                    st.plotly_chart(fig_bt, width="stretch")
 
         # ── SECTION 3: BRSR ANALYTICS ─────────────────────────────────
         if b_ran:
@@ -2671,7 +2673,7 @@ with plots_tab:
                     fig_gb.update_layout(**_chart_layout("GHG Intensity vs Sector Benchmarks (tCO₂/₹Cr)", 280))
                     fig_gb.update_yaxes(title="tCO₂e / ₹Cr")
                     _ax_style(fig_gb)
-                    st.plotly_chart(fig_gb, use_container_width=True)
+                    st.plotly_chart(fig_gb, width="stretch")
 
                 # BRSR PD uplift breakdown
                 with bc2:
@@ -2689,7 +2691,7 @@ with plots_tab:
                                 margin_override=dict(l=230, r=80, t=50, b=20)),
                         )
                         _ax_style(fig_fb)
-                        st.plotly_chart(fig_fb, use_container_width=True)
+                        st.plotly_chart(fig_fb, width="stretch")
                     else:
                         st.success("✅ No BRSR flags — zero PD uplift from operational climate risk")
 
@@ -2713,7 +2715,7 @@ with plots_tab:
                     **_chart_layout("SEBI BRSR Core Readiness", 320),
                     showlegend=True,
                 )
-                st.plotly_chart(fig_rad, use_container_width=True)
+                st.plotly_chart(fig_rad, width="stretch")
 
         # ── SECTION 4: PHYSICAL RISK ───────────────────────────────────
         if p_ran:
@@ -2733,7 +2735,7 @@ with plots_tab:
                             fig_rl.add_trace(go.Bar(x=phys["asset_id"], y=rl.fillna(0), name=col, marker_color=clr))
                     fig_rl.update_layout(**_chart_layout("Revenue Loss by Asset & Hazard (₹ Cr)", 300), barmode="stack")
                     _ax_style(fig_rl)
-                    st.plotly_chart(fig_rl, use_container_width=True)
+                    st.plotly_chart(fig_rl, width="stretch")
 
                 # Asset damage heatmap
                 with pc2:
@@ -2749,7 +2751,7 @@ with plots_tab:
                         ))
                         fig_hm.update_layout(**_chart_layout("Asset Vulnerability Heatmap (0–100)", 280))
                         _ax_style(fig_hm)
-                        st.plotly_chart(fig_hm, use_container_width=True)
+                        st.plotly_chart(fig_hm, width="stretch")
 
             # NGFS scenario projections fan chart
             if isinstance(df_pp, pd.DataFrame) and not df_pp.empty:
@@ -2776,7 +2778,7 @@ with plots_tab:
                 fig_fan.update_layout(**_chart_layout("Physical Revenue Loss — NGFS Scenarios · P10/P50/P90 Bands", 320,
                     legend_override=dict(orientation="h", y=1.1)))
                 _ax_style(fig_fan, rows=1, cols=len(scens_p))
-                st.plotly_chart(fig_fan, use_container_width=True)
+                st.plotly_chart(fig_fan, width="stretch")
 
                 # PD evolution across scenarios
                 fig_pd_p = go.Figure()
@@ -2788,7 +2790,7 @@ with plots_tab:
                 fig_pd_p.update_layout(**_chart_layout("Physical PD — NGFS Scenario Projections", 280))
                 fig_pd_p.update_yaxes(tickformat=".2%")
                 _ax_style(fig_pd_p)
-                st.plotly_chart(fig_pd_p, use_container_width=True)
+                st.plotly_chart(fig_pd_p, width="stretch")
 
             # Folium map
             if isinstance(phys, pd.DataFrame) and not phys.empty:
@@ -2804,7 +2806,7 @@ with plots_tab:
                         color=clr, fill=True, fill_opacity=0.78,
                         popup=f"<b>{r['asset_id']}</b><br>Risk: {v:.2f}<br>Rev Loss: ₹{r['revenue_loss']:.1f}Cr"
                     ).add_to(m)
-                st_folium(m, use_container_width=True, height=400)
+                st_folium(m, width="stretch", height=400)
 
         # ── SECTION 5: INTEGRATED RISK SUMMARY CHART ──────────────────
         if st.session_state.get("integrated_ran", False):
@@ -2824,7 +2826,7 @@ with plots_tab:
                     ))
                     fig_int.update_layout(**_chart_layout("Integrated Risk Metrics (normalised values)", 280))
                     _ax_style(fig_int)
-                    st.plotly_chart(fig_int, use_container_width=True)
+                    st.plotly_chart(fig_int, width="stretch")
 
             # MC distribution if available
             mc = st.session_state.get("mc_results")
@@ -2987,7 +2989,7 @@ with brsr_tab:
                 marker_color=[C["coral"],C["amber"],C["accent3"]],text=[f"{v:.2f}" for v in [s1_int,s2_int,s3_int]],textposition="outside"),row=1,col=2)
             fig_ghg.update_layout(**_chart_layout("",300)); _ax_style(fig_ghg,rows=1,cols=2)
             fig_ghg.update_yaxes(title="tCO₂e/₹Cr",row=1,col=1); fig_ghg.update_yaxes(title="tCO₂e/₹Cr",row=1,col=2)
-            st.plotly_chart(fig_ghg,use_container_width=True)
+            st.plotly_chart(fig_ghg,width="stretch")
             st.caption(f"Sector ({sector}): P25={ghg_bench['p25']}, P50={ghg_bench['p50']}, P75={ghg_bench['p75']} tCO₂e/₹Cr · Your intensity: **{ghg_int:.2f}** — {ghg_rank}")
 
             # Chart 2: PD uplift tornado
@@ -3000,7 +3002,7 @@ with brsr_tab:
                 fig_tor.update_layout(**_chart_layout(f"PD Uplift by BRSR Flag (Total: +{pd_adj*10000:.0f}bps)",max(220,len(flags)*45+80),
                     margin_override=dict(l=250,r=80,t=50,b=20)))
                 fig_tor.update_xaxes(title="Basis Point Uplift")
-                _ax_style(fig_tor); st.plotly_chart(fig_tor,use_container_width=True)
+                _ax_style(fig_tor); st.plotly_chart(fig_tor,width="stretch")
             else:
                 st.success("✅ No BRSR flags — no PD uplift from operational climate risk")
 
@@ -3016,11 +3018,11 @@ with brsr_tab:
                     line=dict(color=C["mint"],width=1,dash="dot"),name="Full Compliance"))
                 fig_rad.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100]),bgcolor=C["bg_dark"]),
                     **_chart_layout("",360),showlegend=True)
-                st.plotly_chart(fig_rad,use_container_width=True)
+                st.plotly_chart(fig_rad,width="stretch")
             with rcol2:
                 st.dataframe(pd.DataFrame([{"Item":k,"Status":"✅" if v==1 else "⚠️" if v==0.5 else "❌"} for k,v in rdness_items.items()])
                     .style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-                    use_container_width=True,height=320,hide_index=True)
+                    width="stretch",height=320,hide_index=True)
 
             # Chart 4: Forward financial risk
             st.subheader("💰 5-Year Forward Operational Climate Cost")
@@ -3031,7 +3033,7 @@ with brsr_tab:
             fig_fwd.add_trace(go.Bar(x=yr5,y=wc_ann,name="Water Cost Escalation",marker_color=C["accent3"]))
             fig_fwd.add_trace(go.Bar(x=yr5,y=ec_ann,name="Energy Carbon Surcharge",marker_color=C["amber"]))
             fig_fwd.update_layout(**_chart_layout("Projected Annual Operational Climate Cost (₹ Cr)",280),barmode="stack")
-            _ax_style(fig_fwd); st.plotly_chart(fig_fwd,use_container_width=True)
+            _ax_style(fig_fwd); st.plotly_chart(fig_fwd,width="stretch")
 
             # Chart 5: Emissions trend
             if s1_y0>0 and r_y0>0:
@@ -3044,7 +3046,7 @@ with brsr_tab:
                     line=dict(color=C["accent2"],width=3),marker=dict(size=10,color=C["accent"]),name="Scope 1 Intensity"))
                 fig_tr.add_hline(y=ghg_bench["p50"],line_dash="dash",line_color=C["amber"],annotation_text=f"Sector P50 ({ghg_bench['p50']})",annotation_font_color=C["amber"])
                 fig_tr.update_layout(**_chart_layout(f"Scope 1 GHG Intensity Trend — {dir_t} (CAGR: {cagr*100:.1f}%/yr)",260))
-                _ax_style(fig_tr); st.plotly_chart(fig_tr,use_container_width=True)
+                _ax_style(fig_tr); st.plotly_chart(fig_tr,width="stretch")
 
             # Compliance table
             st.subheader("📋 BRSR Compliance Status")
@@ -3057,7 +3059,7 @@ with brsr_tab:
                 {"Indicator":"Regulatory Readiness","Value":f"{readiness_score:.0f}%","Threshold":"≥75%","Status":"🟢" if readiness_score>=75 else "🟡" if readiness_score>=50 else "🔴","Percentile":"Ready" if readiness_score>=75 else "Needs work"},
             ]
             st.dataframe(pd.DataFrame(crows).style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-                use_container_width=True,hide_index=True)
+                width="stretch",hide_index=True)
 
             # Integration link to transition engine
             if st.session_state.get("transition_ran",False):
@@ -3496,10 +3498,10 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
             run_btn = st.button(
                 f"🧠 Ask the {adv['icon']} {selected_advisor.split(' ', 1)[1]}",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         with col_btn2:
-            clear_btn = st.button("🗑️ Clear Output", use_container_width=True)
+            clear_btn = st.button("🗑️ Clear Output", width="stretch")
 
         if clear_btn:
             if "ai_outputs" in st.session_state:
@@ -3567,7 +3569,7 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
                 data=output_text,
                 file_name=f"ICCRE_{company_name.replace(' ','_')}_{selected_advisor.split(' ',1)[1].replace(' ','_')[:30]}_{REPORTING_YEAR}.txt",
                 mime="text/plain",
-                use_container_width=False,
+                width="content",
             )
 
         elif not run_btn:
@@ -3770,7 +3772,7 @@ with methodology_tab:
         st.dataframe(
             pd.DataFrame(SCENARIO_REGISTRY).T
             .style.set_properties(**{"background-color": C["bg_dark"], "color": C["text"]}),
-            use_container_width=True
+            width="stretch"
         )
 
     with st.expander("🔢 Model Governance Record"):
@@ -3785,7 +3787,7 @@ with methodology_tab:
             {"Parameter": "Regulatory Basis",    "Value": "ISSB S2 · RBI 2024 Draft · SEBI BRSR Core · NGFS PIII"},
         ])
         st.dataframe(gov_df.style.set_properties(**{"background-color": C["bg_dark"], "color": C["text"]}),
-            use_container_width=True, hide_index=True)
+            width="stretch", hide_index=True)
 
 # ============================================================
 # TAB 9 — VALIDATION  (improved)
@@ -3908,7 +3910,7 @@ with validation_tab:
             fig_v1.update_yaxes(tickformat=".1%", row=1, col=1)
             fig_v1.update_yaxes(ticksuffix=" pp", title="Error (percentage points)", row=1, col=2)
             _ax_style(fig_v1, rows=1, cols=2)
-            st.plotly_chart(fig_v1, use_container_width=True)
+            st.plotly_chart(fig_v1, width="stretch")
 
             # Scatter: predicted vs actual
             fig_v2 = go.Figure()
@@ -3929,7 +3931,7 @@ with validation_tab:
             fig_v2.update_xaxes(title="Observed PD", tickformat=".1%")
             fig_v2.update_yaxes(title="Model PD", tickformat=".1%")
             _ax_style(fig_v2)
-            st.plotly_chart(fig_v2, use_container_width=True)
+            st.plotly_chart(fig_v2, width="stretch")
 
             # Full comparison table
             st.subheader("📋 Year-by-Year Validation Table")
@@ -3943,7 +3945,7 @@ with validation_tab:
                     .applymap(lambda v: f"color:{C['coral']}" if isinstance(v,float) and v>0.005
                               else f"color:{C['mint']}" if isinstance(v,float) and v<-0.005 else "",
                               subset=["Error"]),
-                use_container_width=True, hide_index=True
+                width="stretch", hide_index=True
             )
 
             # ECL validation if provided
@@ -4103,7 +4105,7 @@ with calibration_tab:
             fig_grid.update_layout(**_chart_layout("RMSE (%) by α × β_credit — lower is better", 380,
                 legend_override=dict(orientation="h", y=1.05)))
             fig_grid.update_xaxes(title="β_credit"); fig_grid.update_yaxes(title="α (DSCR sensitivity)")
-            st.plotly_chart(fig_grid, use_container_width=True)
+            st.plotly_chart(fig_grid, width="stretch")
 
             # Calibrated vs uncalibrated PD comparison
             dg_cal = np.clip(1.5 - df_cc["DSCR"], -4.0, 6.0)
@@ -4123,7 +4125,7 @@ with calibration_tab:
             fig_cal.update_layout(**_chart_layout("Calibrated vs Original Model vs Observed PD", 300))
             fig_cal.update_yaxes(tickformat=".1%")
             _ax_style(fig_cal)
-            st.plotly_chart(fig_cal, use_container_width=True)
+            st.plotly_chart(fig_cal, width="stretch")
 
             # Action guidance
             st.subheader("📌 Recommended Actions")
@@ -4297,7 +4299,7 @@ with access_tab:
     )
 
     # Build mailto link
-    if st.button("📨 Send Request", type="primary", use_container_width=False):
+    if st.button("📨 Send Request", type="primary", width="content"):
         if not req_name or not req_email or not req_org or req_role == "— Select —":
             st.error("Please fill in Name, Email, Organisation, and Role before submitting.")
         else:
