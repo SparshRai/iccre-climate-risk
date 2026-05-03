@@ -1,18 +1,20 @@
-MODEL_VERSION    = "1.2.0"
-PARAMETER_VERSION = "ClimateParams_v1.2"
+MODEL_VERSION    = "1.3.0"
+PARAMETER_VERSION = "ClimateParams_v1.3_zero_cost"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
 MODEL_BUILD_DATE  = "2026-04-05"
-MODEL_HASH        = "ICCRE_v1.2_prod"
+MODEL_HASH        = "ICCRE_v1.3_market_ready"
 
 # ============================================================
 # PRODUCT & BRANDING
 # ============================================================
 PRODUCT_TAGLINE  = "India's first quantitative climate-to-credit engine"
-PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-ready · INR-denominated"
+PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-oriented · INR-denominated"
 CONTACT_EMAIL    = "hello@iccre.in"
 PRODUCT_URL      = "https://iccre.in"
 LINKEDIN_URL     = "https://linkedin.com/company/iccre"
+MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
+MODEL_CONFIDENCE_DEFAULT = "Medium — assumption-led, scenario-consistent, not borrower-calibrated"
 
 # ── Demo dataset: Bharat Steel Industries Ltd (fictional) ──
 # Pre-configured to produce visually compelling, realistic demo output.
@@ -70,8 +72,8 @@ DEMO_DATASET = {
 #          Live integration block linking BRSR PD uplift to transition PD.
 #
 # PHYS-01  Physical risk methodology corrected:
-#          IPCC AR6 non-linear damage function: 1+0.20·ΔT+0.04·ΔT²
-#          (replaces flat 1+0.25·ΔT multiplier with no basis).
+#          Illustrative non-linear damage multiplier: 1+0.20·ΔT+0.04·ΔT²
+#          (replaces flat 1+0.25·ΔT multiplier; coefficients are transparent assumptions).
 #          ΔT extracted directly from NGFS scenario temperature pathways
 #          (same df_long as transition engine — fully aligned).
 #          P10/P50/P90 uncertainty bands: σ=0.08·ΔT.
@@ -83,7 +85,7 @@ DEMO_DATASET = {
 # INT-01   Integrated risk tab rebuilt with rigorous methodology:
 #          Gaussian copula joint PD shown with full derivation steps.
 #          Risk decomposition: transition % vs physical % of total ECL.
-#          BRSR PD uplift added as third additive layer on top.
+#          BRSR governance/readiness factor applied as a multiplicative overlay to reduce double counting.
 #          Scenario stress table: all 3 NGFS × 6 key metrics.
 #          Capital adequacy section with ICAAP capital buffer calc.
 #          Board-level RAG summary (Red/Amber/Green with thresholds).
@@ -708,6 +710,14 @@ SECTOR_CONTAGION = {
     "Oil & Gas": {"Power": 0.22, "Manufacturing": 0.15},
 }
 SCENARIO_WEIGHTS = {"Current Policies": 0.5, "Nationally Determined Contributions (NDCs)": 0.3, "Net Zero 2050": 0.2}
+# Zero-cost production-readiness overlays. These are transparent management overlays,
+# not externally purchased/calibrated datasets.
+BRSR_MAX_GOVERNANCE_MULTIPLIER = 1.20  # max +20% relative PD impact at 150 bps BRSR score
+SCENARIO_WEIGHTING_METHOD = "Management-weighted NGFS ECL"
+MODEL_LIMITATION_NOTE = (
+    "Sector coefficients and BRSR overlays are transparent management assumptions. "
+    "For regulated lending/provisioning, calibrate against borrower/default history."
+)
 SCENARIO_REGISTRY = {
     "Current Policies": {"type": "Baseline", "temperature": "≈2.7°C", "policy_intensity": "Low"},
     "Nationally Determined Contributions (NDCs)": {"type": "Policy Transition", "temperature": "≈2.1°C", "policy_intensity": "Medium"},
@@ -760,6 +770,35 @@ def gaussian_copula_pd(pd_t, pd_p, rho):
     pd_p = np.clip(pd_p, 1e-6, 1-1e-6)
     z_t  = norm.ppf(pd_t); z_p = norm.ppf(pd_p)
     return float(np.clip(multivariate_normal.cdf([z_t, z_p], [0,0], [[1,rho],[rho,1]]), 0, 1))
+
+def brsr_governance_multiplier(brsr_pd_adj, cap=BRSR_MAX_GOVERNANCE_MULTIPLIER):
+    """
+    Convert BRSR risk from direct additive bps into a bounded relative governance overlay.
+    This is more conservative methodologically because BRSR weaknesses may overlap with
+    transition/physical preparedness and should not always be added as a separate PD block.
+    """
+    if brsr_pd_adj is None or brsr_pd_adj <= 0:
+        return 1.0
+    # 0.015 equals the existing 150 bps BRSR cap; map it to max +20% relative PD.
+    return float(np.clip(1.0 + (brsr_pd_adj / 0.015) * (cap - 1.0), 1.0, cap))
+
+def scenario_weighted_summary(df, metric, scenario_col="Scenario"):
+    """Return management-weighted scenario metric using SCENARIO_WEIGHTS.
+    Falls back to equal weights for unknown/custom scenarios.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty or metric not in df.columns or scenario_col not in df.columns:
+        return None
+    grp = df.groupby(scenario_col)[metric].max()
+    raw_weights = {s: SCENARIO_WEIGHTS.get(s, 1.0) for s in grp.index}
+    total_w = sum(raw_weights.values()) or 1.0
+    return float(sum(grp[s] * raw_weights[s] / total_w for s in grp.index))
+
+def model_confidence_label(has_validation=False, has_calibration=False):
+    if has_validation and has_calibration:
+        return "High — calibrated and validation-supported"
+    if has_validation or has_calibration:
+        return "Medium-High — partially evidenced"
+    return MODEL_CONFIDENCE_DEFAULT
 
 def simulate_carbon_price_path(start, years, drift=0.05, vol=0.25):
     prices = [start]
@@ -1099,6 +1138,7 @@ if any_ran:
         _title(ws_sum, f"ICCRE v{MODEL_VERSION} — Climate Risk Summary: {company_name}")
         gov_rows = [
             ("Model Version", MODEL_VERSION), ("Engine", ENGINE_BUILD),
+            ("Model Use", MODEL_USE_NOTE),
             ("NGFS Data", NGFS_DATA_VERSION), ("Build Date", MODEL_BUILD_DATE),
             ("Company", company_name), ("Sector", sector),
             ("Reporting Year", REPORTING_YEAR), ("Baseline Scenario", BASELINE_SCENARIO),
@@ -1154,6 +1194,8 @@ if any_ran:
             ("Governance Score (G)", round(G, 3)),
             ("NGFS Data Version", NGFS_DATA_VERSION),
             ("Model Version", MODEL_VERSION),
+            ("Model Limitation Note", MODEL_LIMITATION_NOTE),
+            ("Scenario Weighting", SCENARIO_WEIGHTING_METHOD),
         ]
         df_ass = pd.DataFrame(assumptions, columns=["Parameter", "Value"])
         _write_df(ws_ass, df_ass, start_row=3)
@@ -1387,14 +1429,14 @@ def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_rev
         total_ebitda_cr, interest_cr, baseline_pd, lgd, ead_cr, gamma_phys=0.5,
         dscr_sensitivity=1.0, pd_floor=0.0005, pd_cap=0.35):
     """
-    PHYS-01: IPCC AR6 damage function replaces flat 1+0.25*ΔT
+    PHYS-01: transparent illustrative damage multiplier replaces flat 1+0.25*ΔT
     damage_mult = 1 + 0.20·ΔT + 0.04·ΔT²
     P10/P90 uncertainty: σ = 0.08·ΔT
     """
     records = []
     for _, row in df_ngfs_temp.iterrows():
         dt = row["Delta_T_vs_Baseline"]
-        # IPCC AR6 non-linear damage (replaces 0.25*dt)
+        # Transparent non-linear damage multiplier (assumption; replaces 0.25*dt)
         dm       = 1.0 + 0.20*dt + 0.04*dt**2
         sigma    = 0.08*dt
         dm_p10   = max(1.0, dm-1.645*sigma)
@@ -1807,7 +1849,7 @@ with transition_tab:
 # ============================================================
 with physical_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>🌍 Physical Risk Engine</h2>",unsafe_allow_html=True)
-    st.caption("Asset-level GIS-based physical risk with NGFS-aligned temperature pathways and IPCC AR6 damage functions")
+    st.caption("Asset-level GIS-based physical risk with NGFS-aligned temperature pathways and transparent damage assumptions")
 
     if not st.session_state.get("enable_physical",False):
         st.info("Enable **Physical Risk** in the sidebar.")
@@ -1821,7 +1863,7 @@ with physical_tab:
             **v1.1 (old):** `proj_loss = TOTAL_REV_LOSS × (1 + 0.25 × ΔT)` — flat multiplier, no citation.
 
             **v1.2 (corrected):**
-            - Damage function: `1 + 0.20·ΔT + 0.04·ΔT²` (IPCC AR6 economic damage, non-linear)
+            - Damage multiplier: `1 + 0.20·ΔT + 0.04·ΔT²` (transparent illustrative assumption; user-review required)
             - ΔT from NGFS scenario temperature pathways (same data as transition engine)
             - P10/P50/P90 uncertainty bands: `σ = 0.08 × ΔT`
             - Signed DSCR gap consistent with FIX-04
@@ -1998,7 +2040,7 @@ with physical_tab:
             # NGFS scenario fan charts (PHYS-01)
             if not df_phys_proj.empty:
                 st.subheader("🌡️ NGFS Physical Risk Projections")
-                st.caption("Revenue loss under each NGFS scenario · IPCC AR6 damage function · P10/P50/P90 uncertainty")
+                st.caption("Revenue loss under each NGFS scenario · illustrative damage multiplier · P10/P50/P90 uncertainty")
                 tabs_scen = st.tabs(sorted(df_phys_proj["Scenario"].unique()))
                 for tab_s,scen in zip(tabs_scen,sorted(df_phys_proj["Scenario"].unique())):
                     with tab_s:
@@ -2206,7 +2248,7 @@ with targets_tab:
 # ============================================================
 with integrated_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>🧩 Integrated Climate Risk</h2>",unsafe_allow_html=True)
-    st.caption("Gaussian copula joint PD · BRSR uplift layer · Capital assessment · ICAAP metrics")
+    st.caption("Gaussian copula joint PD · BRSR governance overlay · scenario-weighted ECL · capital assessment")
 
     transition_ran_i = st.session_state.get("transition_ran",False)
     physical_ran_i   = st.session_state.get("physical_ran",False)
@@ -2285,9 +2327,16 @@ with integrated_tab:
         elif pd_phys_scen is not None:
             pd_copula=pd_phys_scen
 
-        # Add BRSR uplift (additive, capped at PD_CAP)
-        pd_integrated=float(np.clip(pd_copula+brsr_pd_adj,PD_FLOOR,PD_CAP)) if pd_copula is not None else None
-        ecl_integrated=(ecl_trans or 0)+(ecl_phys or 0)
+        # Apply BRSR as a bounded governance/readiness multiplier, not a direct additive PD block.
+        # This reduces double-counting because poor BRSR performance can already affect transition
+        # and physical preparedness channels.
+        brsr_mult = brsr_governance_multiplier(brsr_pd_adj)
+        pd_integrated=float(np.clip(pd_copula*brsr_mult,PD_FLOOR,PD_CAP)) if pd_copula is not None else None
+
+        # Keep peak-stress ECL for risk appetite, and add a scenario-weighted ECL for market-ready reporting.
+        weighted_ecl_transition = scenario_weighted_summary(st.session_state.get("df_transition"), "ECL_Transition") or (ecl_trans or 0)
+        weighted_pd_transition  = scenario_weighted_summary(st.session_state.get("df_transition"), "PD_Transition") or (pd_trans or 0)
+        ecl_integrated=(weighted_ecl_transition or 0)+(ecl_phys or 0)
         dscr_integrated=min(d for d in [dscr_trans,dscr_phys] if d is not None) if any(d is not None for d in [dscr_trans,dscr_phys]) else None
 
         if pd_integrated is None:
@@ -2316,23 +2365,23 @@ with integrated_tab:
             <div style="font-size:18px;font-weight:700;color:{rag_color};">{rag_text}</div>
             <div style="font-size:13px;color:{C['slate']};margin-top:3px;">
               Integrated Risk Score: {risk_score_int}/100 · PD: {pd_integrated:.2%} · ECL/EAD: {ecl_ead_ratio:.2%}
-              {f' · BRSR uplift: +{brsr_pd_adj*10000:.0f}bps' if brsr_ran_i and brsr_pd_adj>0 else ''}
+              {f' · BRSR factor: ×{brsr_mult:.2f}' if brsr_ran_i and brsr_pd_adj>0 else ''}
             </div>
           </div>
         </div>""",unsafe_allow_html=True)
 
         # KPI grid
         ik1,ik2,ik3,ik4,ik5=st.columns(5)
-        ik1.metric("Integrated PD",f"{pd_integrated:.2%}",help="Gaussian copula + BRSR uplift")
-        ik2.metric("Integrated ECL",f"₹{ecl_integrated:,.1f} Cr")
+        ik1.metric("Integrated PD",f"{pd_integrated:.2%}",help="Gaussian copula × BRSR governance factor")
+        ik2.metric("Weighted Integrated ECL",f"₹{ecl_integrated:,.1f} Cr")
         ik3.metric("ECL / EAD",f"{ecl_ead_ratio:.2%}")
         ik4.metric("Min DSCR",f"{dscr_integrated:.2f}×" if dscr_integrated else "—")
         ik5.metric("Risk Score",f"{risk_score_int}/100")
 
         if exec_mode=="combined":
-            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>Copula PD: {pd_copula:.2%} → +BRSR {brsr_pd_adj*10000:.0f}bps ({_brsr_label}) → Total: {pd_integrated:.2%}</div>",unsafe_allow_html=True)
+            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>Copula PD: {pd_copula:.2%} → BRSR factor ×{brsr_mult:.2f} ({_brsr_label}) → Total: {pd_integrated:.2%}</div>",unsafe_allow_html=True)
         elif brsr_ran_i and brsr_pd_adj>0:
-            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>Transition PD: {pd_trans:.2%} → +BRSR {brsr_pd_adj*10000:.0f}bps ({_brsr_label}) → Total: {pd_integrated:.2%}</div>",unsafe_allow_html=True)
+            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>Transition PD: {pd_trans:.2%} → BRSR factor ×{brsr_mult:.2f} ({_brsr_label}) → Total: {pd_integrated:.2%}</div>",unsafe_allow_html=True)
 
         st.divider()
 
@@ -2344,7 +2393,7 @@ with integrated_tab:
             if transition_ran_i and ecl_trans: sources.append("Transition"); values.append(ecl_trans)
             if exec_mode in ["physical_only","combined"] and ecl_phys: sources.append("Physical"); values.append(ecl_phys)
             if brsr_ran_i and brsr_pd_adj>0:
-                brsr_ecl_equiv=brsr_pd_adj*LGD_0*EAD/1e3; sources.append("BRSR Operational"); values.append(brsr_ecl_equiv)
+                brsr_ecl_equiv=max(pd_integrated-(pd_copula or 0),0)*LGD_0*EAD/1e3; sources.append("BRSR Governance Overlay"); values.append(brsr_ecl_equiv)
             if sources:
                 fig_dec=go.Figure(go.Pie(labels=sources,values=values,
                     hole=0.45,marker=dict(colors=[C["accent2"],C["coral"],C["purple"]][:len(sources)]),
@@ -2381,8 +2430,9 @@ with integrated_tab:
                 **Step 3 — Bivariate normal CDF:**
                 - `PD_copula = Φ₂(z_T, z_P, ρ={correlation}) = {pd_copula:.4f}`
 
-                **Step 4 — BRSR uplift (additive):**
-                - `PD_integrated = {pd_copula:.4f} + {brsr_pd_adj:.4f} (BRSR uplift) = {pd_integrated:.4f}`
+                **Step 4 — BRSR governance/readiness overlay:**
+                - `BRSR_factor = {brsr_mult:.4f}`
+                - `PD_integrated = {pd_copula:.4f} × {brsr_mult:.4f} = {pd_integrated:.4f}`
 
                 **Why copula beats simple addition:** `PD_T + PD_P = {(pd_trans or 0)+(pd_phys_scen or 0):.4f}` vs copula `{pd_copula:.4f}` — copula captures correlation structure, prevents double-counting independent defaults.
                 """)
@@ -2423,15 +2473,18 @@ with integrated_tab:
         # ── ISSB S2 SUMMARY TABLE ──
         st.subheader("📋 ISSB S2–Aligned Integrated Summary")
         df_isummary=pd.DataFrame([
-            {"Metric":"Integrated PD (Copula + BRSR)","Value":f"{pd_integrated:.4f}","ISSB S2":"§15(a)"},
-            {"Metric":"Integrated ECL (₹ Cr)","Value":f"{ecl_integrated:.2f}","ISSB S2":"§15(b)"},
+            {"Metric":"Integrated PD (Copula × BRSR factor)","Value":f"{pd_integrated:.4f}","ISSB S2":"§15(a)"},
+            {"Metric":"Scenario-Weighted Integrated ECL (₹ Cr)","Value":f"{ecl_integrated:.2f}","ISSB S2":"§15(b)"},
+            {"Metric":"Weighted Transition PD","Value":f"{weighted_pd_transition:.4f}","ISSB S2":"§15(a)"},
             {"Metric":"Post-Stress DSCR","Value":f"{dscr_integrated:.2f}" if dscr_integrated else "—","ISSB S2":"§15(c)"},
             {"Metric":"ECL / EAD","Value":f"{ecl_ead_ratio:.4f}","ISSB S2":"§16"},
-            {"Metric":"BRSR PD Uplift (bps)","Value":f"{brsr_pd_adj*10000:.1f}","ISSB S2":"§15(a) operational"},
+            {"Metric":"BRSR Governance Factor","Value":f"x{brsr_mult:.3f}","ISSB S2":"§15(a) operational"},
             {"Metric":"Capital Stress Signal","Value":capital_signal,"ISSB S2":"§16"},
             {"Metric":"Integrated Risk Score (0–100)","Value":f"{risk_score_int}","ISSB S2":"§14–16"},
             {"Metric":"Stranded Assets (₹ Cr)","Value":f"{stranded_t:.0f}" if stranded_t else "—","ISSB S2":"§22"},
             {"Metric":"CAPEX Gap (₹ Cr)","Value":f"{capex_t:.0f}" if capex_t else "—","ISSB S2":"§14"},
+            {"Metric":"Model Confidence","Value":model_confidence_label(st.session_state.get("validation_results") is not None, st.session_state.get("calibrated_params") is not None),"ISSB S2":"Governance"},
+            {"Metric":"Model Use Limitation","Value":MODEL_USE_NOTE,"ISSB S2":"Governance"},
         ])
         st.dataframe(df_isummary.style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
             width="stretch",hide_index=True)
@@ -2468,7 +2521,7 @@ with integrated_tab:
                 pt=np.clip(sigmoid(lp),PD_FLOOR,PD_CAP)
                 pp=np.clip(pd_phys_scen*(1+pds),0,1) if physical_ran_i and pd_phys_scen else 0
                 pj=gaussian_copula_pd(pt,pp,correlation) if physical_ran_i else pt
-                pj=float(np.clip(pj+brsr_pd_adj,PD_FLOOR,PD_CAP))
+                pj=float(np.clip(pj*brsr_governance_multiplier(brsr_pd_adj),PD_FLOOR,PD_CAP))
                 lj=np.clip(LGD_0*(1+0.2*cbu+LGD_PHYSICAL_MULTIPLIER*pds),0,1)
                 pd_sim.append(pj); ecl_sim.append(pj*lj*EAD/1e3)
 
@@ -2841,7 +2894,7 @@ with plots_tab:
                         color=clr, fill=True, fill_opacity=0.78,
                         popup=f"<b>{r['asset_id']}</b><br>Risk: {v:.2f}<br>Rev Loss: ₹{r['revenue_loss']:.1f}Cr"
                     ).add_to(m)
-                st_folium(m, use_container_width=True, height=400)
+                st_folium(m, width=1200, height=400)
 
         # ── SECTION 5: INTEGRATED RISK SUMMARY CHART ──────────────────
         if st.session_state.get("integrated_ran", False):
@@ -3105,8 +3158,8 @@ with brsr_tab:
                     ic1,ic2,ic3=st.columns(3)
                     ic1.metric("Base Transition PD",f"{pd_pk:.2%}")
                     ic2.metric("BRSR PD Uplift",f"+{pd_adj*10000:.0f} bps")
-                    ic3.metric("Total PD (Transition + BRSR)",f"{min(pd_pk+pd_adj,PD_CAP):.2%}",delta=f"+{pd_adj*10000:.0f}bps",delta_color="inverse")
-                    st.caption("BRSR uplift is additive operational climate risk premium. Captures risks outside carbon-price transmission chain: water scarcity, energy cost escalation, governance deficiencies, regulatory non-compliance penalties.")
+                    ic3.metric("Total PD (Transition × BRSR factor)",f"{min(pd_pk+pd_adj,PD_CAP):.2%}",delta=f"+{pd_adj*10000:.0f}bps",delta_color="inverse")
+                    st.caption("BRSR is treated as a bounded governance/readiness overlay for integrated PD to reduce double-counting with transition and physical risk channels. It captures water scarcity, energy dependence, governance deficiencies, and regulatory readiness risk.")
 
             st.success("✅ BRSR Enhanced Diagnostics v1.2 completed")
             log_model_run("BRSR",{"company":company_name,"risk_score":risk_score_brsr,"pd_adj_bps":pd_adj*10000,"readiness":readiness_score})
@@ -3838,8 +3891,7 @@ with methodology_tab:
         structural credit framework adapted for climate-specific risk factors.
 
         **Stage 5 — Integration & ECL:** Transition and physical PDs are combined using a
-        Gaussian copula accounting for cross-risk correlation. BRSR operational flags add a
-        basis-point uplift. Final ECL = PD × LGD × EAD (IFRS 9 compliant).
+        Gaussian copula accounting for cross-risk correlation. BRSR operational flags apply a bounded governance/readiness multiplier. Final simplified ECL = PD × LGD × EAD; scenario-weighted ECL is also shown for decision support.
         """)
 
     with st.expander("📐 Core Credit Model Equations"):
@@ -3865,7 +3917,7 @@ with methodology_tab:
         st.latex(r"P_{10} = \text{mult} - 1.645\,\sigma, \quad P_{90} = \text{mult} + 1.645\,\sigma")
         st.markdown("""
         The quadratic damage function is calibrated to economic damage literature consistent
-        with IPCC AR6 findings. The linear term (0.20) captures proportional temperature-income
+        climate damage literature but is not presented as an official IPCC formula. The linear term (0.20) captures proportional temperature-income
         effects; the quadratic term (0.04) captures accelerating damages at higher warming levels.
         Temperature anomaly ΔT is extracted from the same NGFS scenario pathway used by the
         transition engine, ensuring scenario consistency.
@@ -3876,7 +3928,7 @@ with methodology_tab:
 
     with st.expander("🔀 Gaussian Copula Integration"):
         st.latex(r"PD_{copula} = \Phi_2\!\left(\Phi^{-1}(PD_T),\;\Phi^{-1}(PD_P),\;\rho\right)")
-        st.latex(r"PD_{integrated} = \min\!\left(PD_{copula} + \Delta PD_{BRSR},\; PD_{cap}\right)")
+        st.latex(r"PD_{integrated} = \min\!\left(PD_{copula} \times M_{BRSR},\; PD_{cap}\right)")
         st.markdown("""
         The bivariate Gaussian copula captures the statistical dependence between transition risk
         and physical risk without assuming they are independent or perfectly correlated.
@@ -3884,15 +3936,12 @@ with methodology_tab:
         reflecting the degree to which carbon-intensive sectors face both types of climate risk
         simultaneously.
 
-        BRSR operational risk is additive rather than copula-integrated because it represents a
-        distinct third category of climate exposure (regulatory and operational) rather than a
-        correlated extension of credit or asset risk. The BRSR uplift is capped at 150 basis points.
+        BRSR operational risk is treated as a bounded governance/readiness multiplier rather than a direct additive PD block. This reduces double-counting because weak BRSR readiness can overlap with transition preparedness, physical resilience, and management quality. The multiplier is transparently capped at +20% relative PD impact.
         """)
 
     with st.expander("📘 BRSR → Credit Risk Linkage"):
         st.markdown("""
-        BRSR Core operational flags are mapped to basis-point PD adjustments that represent
-        incremental credit risk from operational climate exposures. This linkage captures risks
+        BRSR Core operational flags are mapped to a governance/readiness overlay that represents incremental credit risk from operational climate exposures. This linkage captures risks
         outside the carbon-price transmission chain, including:
 
         - Water scarcity exposure in high-stress regions
@@ -3900,7 +3949,7 @@ with methodology_tab:
         - Governance deficiencies that reduce management quality of climate transition
         - Regulatory non-compliance risk under SEBI BRSR Core requirements
 
-        The PD uplift is conservative: each flag is treated independently and the total is capped.
+        The overlay is conservative and transparent: each flag is treated independently, the raw score is capped, and integrated PD uses a bounded multiplier to avoid double-counting.
         """)
 
     with st.expander("🔄 v1.1 → v1.2 Model Corrections"):
@@ -3918,9 +3967,23 @@ with methodology_tab:
         | FIX-07 | MC GDP sign consistency | MC outputs now match deterministic results |
         """)
 
+
+    with st.expander("🧪 Zero-Cost Market-Readiness Upgrades in v1.3"):
+        st.markdown(f"""
+        v1.3 improves reliability without paid data dependencies:
+
+        - BRSR now enters integrated PD as a **bounded governance/readiness multiplier**, not a direct additive PD block.
+        - Integrated reporting now includes **scenario-weighted ECL** using transparent management weights: `{SCENARIO_WEIGHTS}`.
+        - Physical damage wording is corrected to **illustrative non-linear multiplier**, avoiding unsupported claims of an official IPCC formula.
+        - Exports and methodology now state the model-use limitation clearly: `{MODEL_USE_NOTE}`
+        - Model confidence is labelled based on whether calibration and validation evidence exists in the session.
+
+        These upgrades improve auditability and market readiness while keeping the tool free to operate.
+        """)
+
     with st.expander("⚠️ Model Limitations & Assumptions"):
         st.markdown("""
-        The following limitations apply and should be disclosed in any regulatory submission:
+        The following limitations apply and should be disclosed in any regulatory submission or client demo:
 
         1. **Calibration:** Sector parameters are calibrated to published literature. Borrower-specific
            historical default data has not been used unless the Calibration tab has been run with
