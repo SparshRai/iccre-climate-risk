@@ -3216,6 +3216,145 @@ with ai_tab:
                 }
             return pl
 
+        def _safe_float(v, default=0.0):
+            try:
+                if pd.isna(v):
+                    return default
+                return float(v)
+            except Exception:
+                return default
+
+        def _compact_payload_for_ai(pl):
+            """Create a small, advisor-ready data packet to stay below Groq TPM limits."""
+            fin = pl.get("financials", {})
+            out = {
+                "company": pl.get("company"),
+                "sector": pl.get("sector"),
+                "year": pl.get("reporting_year"),
+                "baseline_scenario": pl.get("baseline_scenario"),
+                "financials": {
+                    "revenue_cr": fin.get("revenue_cr"),
+                    "ebitda_margin_pct": fin.get("ebitda_margin_pct"),
+                    "interest_cr": fin.get("interest_cr"),
+                    "ead_cr": fin.get("ead_cr"),
+                    "base_pd_pct": fin.get("base_pd_pct"),
+                    "base_lgd_pct": fin.get("base_lgd_pct"),
+                    "total_emissions_tco2e": fin.get("total_emissions_tco2e"),
+                    "high_carbon_assets_cr": fin.get("high_carbon_assets_cr"),
+                },
+            }
+
+            tr = pl.get("transition_risk", {})
+            if tr:
+                scen = tr.get("scenario_summary", {})
+                worst_path = tr.get("worst_scenario_year_by_year", []) or []
+                key_years = []
+                if worst_path:
+                    key_years = [worst_path[0]]
+                    if len(worst_path) > 2:
+                        key_years.append(worst_path[len(worst_path)//2])
+                    if len(worst_path) > 1:
+                        key_years.append(worst_path[-1])
+                out["transition"] = {
+                    "worst_scenario": tr.get("worst_scenario"),
+                    "scenario_summary": scen,
+                    "key_years_only": key_years,
+                    "planned_capex_cr": tr.get("planned_capex_cr"),
+                    "abatement_cost_inr_per_tco2": tr.get("abatement_cost_inr_per_tco2"),
+                    "abatement_potential_pct": tr.get("abatement_potential_pct"),
+                    "governance_score": tr.get("governance_score"),
+                }
+
+            pr = pl.get("physical_risk", {})
+            if pr:
+                out["physical"] = {
+                    "summary": pr.get("summary", {}),
+                    "asset_count": pr.get("asset_count", 0),
+                    "top_risk_assets": (pr.get("top_risk_assets", []) or [])[:2],
+                    "ngfs_peak_rev_loss_p50": pr.get("ngfs_peak_rev_loss_p50", 0),
+                }
+
+            br = pl.get("brsr", {})
+            if br:
+                out["brsr"] = {
+                    "pd_uplift_bps": br.get("pd_uplift_bps", 0),
+                    "readiness_score_pct": br.get("readiness_score_pct", 0),
+                    "active_flags": (br.get("active_flags", []) or [])[:6],
+                    "water_cost_risk_5yr_cr": br.get("water_cost_risk_5yr_cr", 0),
+                    "energy_transition_risk_cr": br.get("energy_transition_risk_cr", 0),
+                    "kpis": br.get("kpis", {}),
+                }
+
+            integ = pl.get("integrated_risk", [])
+            if integ:
+                out["integrated"] = integ[:9]
+            if pl.get("monte_carlo"):
+                out["monte_carlo"] = pl.get("monte_carlo")
+            if pl.get("additional_context"):
+                out["additional_context"] = str(pl.get("additional_context"))[:900]
+            if pl.get("specific_focus"):
+                out["specific_focus"] = str(pl.get("specific_focus"))[:350]
+            return out
+
+        def _json_compact(obj, max_chars=5200):
+            txt = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
+            if len(txt) > max_chars:
+                return txt[:max_chars] + "...[TRUNCATED_TO_FIT_GROQ_LIMIT]"
+            return txt
+
+        def _optimized_system_prompt(advisor_name, original_system):
+            """Shorter prompts for high-value advisors to reduce tokens and improve consistency."""
+            common = (
+                "Use only the data provided. Be concise, numerical, India-focused, and action-oriented. "
+                "Do not invent exact data; when estimating, label it as an estimate. "
+                "Keep output under 900 words. Use markdown tables where useful."
+            )
+            if "CFO Action Advisor" in advisor_name:
+                return common + """
+ROLE: CFO climate-finance advisor for Indian corporates.
+OUTPUT:
+1) CFO priorities table with exactly 3 rows: Action, ₹ cost/funding, timeline, metric impact (PD/ECL/DSCR), risk if not done.
+2) Financing plan: green bonds, ESG-linked loan, REC/carbon benefits, SIDBI/IFC/ADB options; include estimated ticket/rate ranges.
+3) 90-day execution checklist.
+4) What NOT to do: 3 mistakes.
+Be specific and use the company's actual risk metrics."""
+            if "Operations & Engineering Advisor" in advisor_name:
+                return common + """
+ROLE: Operations and decarbonisation engineering advisor for Indian heavy industry.
+OUTPUT:
+1) Operational root cause in 2 bullets.
+2) Quick wins table: 3-4 actions, ₹ cost, annual saving, tCO₂e impact, payback, Indian vendor examples.
+3) Medium-term CAPEX table: 2-3 projects, priority, cost, timeline, effect on carbon burden/DSCR/PD.
+4) Year-1 implementation sequence by quarter.
+Keep recommendations practical for the stated sector."""
+            if "Strategic Planning Advisor" in advisor_name:
+                return common + """
+ROLE: Strategy advisor building a climate-resilient 5-year roadmap.
+OUTPUT:
+1) Strategic verdict in 3 sentences.
+2) 5-year roadmap table: Year, investment decision, business-model move, metric target, milestone.
+3) Competitive dynamics: who wins/loses and why.
+4) 2 hidden opportunities with revenue logic.
+5) 3 strategic risks to avoid.
+Tie every recommendation to PD, DSCR, ECL, carbon burden, CAPEX gap or BRSR flags."""
+            return common + "\n" + original_system[:1800]
+
+        def _build_ai_messages(advisor_name, adv, payload):
+            compact_payload = _compact_payload_for_ai(payload)
+            data_brief = _json_compact(compact_payload, max_chars=5200)
+            focus = compact_payload.get("specific_focus") or "Use the most material risks in the data."
+            user_msg = (
+                f"TASK: {adv['user_prefix']}\n"
+                f"COMPANY: {company_name} | SECTOR: {sector} | YEAR: {REPORTING_YEAR}\n"
+                f"FOCUS: {focus}\n"
+                "METHOD: First silently identify the 3 most material risks from the data, then write the final answer only.\n"
+                f"COMPACT_DATA_JSON:\n{data_brief}"
+            )
+            return [
+                {"role": "system", "content": _optimized_system_prompt(advisor_name, adv["system"])},
+                {"role": "user", "content": user_msg},
+            ]
+
         # ── Advisor definitions ─────────────────────────────────────────
         ADVISORS = {
             "🔴 Crisis Diagnostician": {
@@ -3555,33 +3694,37 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
             if focus:
                 payload["specific_focus"] = focus
 
-            user_msg = (
-                f"{adv['user_prefix']}\n\n"
-                f"COMPANY: {company_name} | SECTOR: {sector} | YEAR: {REPORTING_YEAR}\n\n"
-                f"DATA:\n{json.dumps(payload, indent=2, default=str)}"
-            )
-            if focus:
-                user_msg += f"\n\nSPECIFIC FOCUS: {focus}"
+            messages = _build_ai_messages(selected_advisor, adv, payload)
 
-            with st.spinner(f"Your {selected_advisor} is analysing the data..."):
+            with st.spinner(f"Your {selected_advisor} is analysing the compact risk brief..."):
                 try:
                     client = _get_groq_client()
-                    resp = client.chat.completions.create(
+                    stream = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
-                        messages=[
-                            {"role": "system", "content": adv["system"]},
-                            {"role": "user",   "content": user_msg},
-                        ],
-                        temperature=0.30,
-                        max_tokens=3000,
+                        messages=messages,
+                        temperature=0.25,
+                        max_tokens=900,
+                        stream=True,
                     )
-                    output = resp.choices[0].message.content
+                    output_parts = []
+                    stream_box = st.empty()
+                    for chunk in stream:
+                        delta = getattr(chunk.choices[0].delta, "content", None)
+                        if delta:
+                            output_parts.append(delta)
+                            stream_box.markdown("".join(output_parts))
+
+                    output = "".join(output_parts).strip()
                     if "ai_outputs" not in st.session_state:
                         st.session_state["ai_outputs"] = {}
                     st.session_state["ai_outputs"][selected_advisor] = output
                     st.session_state["ai_outputs"]["_last_advisor"] = selected_advisor
                 except Exception as e:
-                    st.error(f"AI error: {e}. Check that GROQ_API_KEY is set in Streamlit Secrets or your environment.")
+                    err = str(e)
+                    if "413" in err or "Request too large" in err or "tokens" in err:
+                        st.error("AI error: Groq token limit exceeded even after compression. Reduce optional context/focus text and retry, or use a higher Groq tier/model.")
+                    else:
+                        st.error(f"AI error: {e}. Check that GROQ_API_KEY is set in Streamlit Secrets or your environment.")
 
         # ── Display output ──────────────────────────────────────────────
         ai_outs = st.session_state.get("ai_outputs", {})
