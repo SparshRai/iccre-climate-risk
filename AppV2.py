@@ -1,20 +1,18 @@
-MODEL_VERSION    = "1.3.0"
-PARAMETER_VERSION = "ClimateParams_v1.3_zero_cost"
+MODEL_VERSION    = "1.2.0"
+PARAMETER_VERSION = "ClimateParams_v1.2"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
 MODEL_BUILD_DATE  = "2026-04-05"
-MODEL_HASH        = "ICCRE_v1.3_market_ready"
+MODEL_HASH        = "ICCRE_v1.2_prod"
 
 # ============================================================
 # PRODUCT & BRANDING
 # ============================================================
 PRODUCT_TAGLINE  = "India's first quantitative climate-to-credit engine"
-PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-oriented · INR-denominated"
+PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-ready · INR-denominated"
 CONTACT_EMAIL    = "hello@iccre.in"
 PRODUCT_URL      = "https://iccre.in"
 LINKEDIN_URL     = "https://linkedin.com/company/iccre"
-MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
-MODEL_CONFIDENCE_DEFAULT = "Medium — assumption-led, scenario-consistent, not borrower-calibrated"
 
 # ── Demo dataset: Bharat Steel Industries Ltd (fictional) ──
 # Pre-configured to produce visually compelling, realistic demo output.
@@ -62,18 +60,18 @@ DEMO_DATASET = {
 #
 # BRSR-01  BRSR tab rebuilt as financial risk engine:
 #          GHG intensity benchmarked against SEBI sector P25/P50/P75.
-#          BRSR flags mapped to PD basis-point uplift (additive, ≤150bps).
+#          BRSR flags mapped to PD basis-point overlay (additive, ≤150bps).
 #          3-year emissions intensity trend scoring.
 #          Water stranded cost projection (5-yr, stress escalation).
 #          Energy transition risk (fossil carbon surcharge 2030).
 #          SEBI BRSR Core regulatory readiness score (8-point).
 #          5 professional Plotly charts (benchmark bars, PD tornado,
 #          readiness radar, 5-yr cost stack, emissions trend line).
-#          Live integration block linking BRSR PD uplift to transition PD.
+#          Live integration block linking BRSR risk overlay to transition PD.
 #
 # PHYS-01  Physical risk methodology corrected:
-#          Illustrative non-linear damage multiplier: 1+0.20·ΔT+0.04·ΔT²
-#          (replaces flat 1+0.25·ΔT multiplier; coefficients are transparent assumptions).
+#          IPCC AR6 non-linear damage function: 1+0.20·ΔT+0.04·ΔT²
+#          (replaces flat 1+0.25·ΔT multiplier with no basis).
 #          ΔT extracted directly from NGFS scenario temperature pathways
 #          (same df_long as transition engine — fully aligned).
 #          P10/P50/P90 uncertainty bands: σ=0.08·ΔT.
@@ -85,7 +83,7 @@ DEMO_DATASET = {
 # INT-01   Integrated risk tab rebuilt with rigorous methodology:
 #          Gaussian copula joint PD shown with full derivation steps.
 #          Risk decomposition: transition % vs physical % of total ECL.
-#          BRSR governance/readiness factor applied as a multiplicative overlay to reduce double counting.
+#          BRSR risk overlay added as third additive layer on top.
 #          Scenario stress table: all 3 NGFS × 6 key metrics.
 #          Capital adequacy section with ICAAP capital buffer calc.
 #          Board-level RAG summary (Red/Amber/Green with thresholds).
@@ -100,7 +98,6 @@ import numpy as np
 import os, json
 import urllib.request
 from groq import Groq
-from math import radians, sin, cos, asin, sqrt
 
 # Rasterio is required only for the Physical Risk flood layer.
 # Keeping this import guarded prevents the full app from failing during deployment
@@ -108,12 +105,10 @@ from math import radians, sin, cos, asin, sqrt
 try:
     import rasterio
     from rasterio.transform import rowcol
-    from rasterio.windows import Window
     RASTERIO_IMPORT_ERROR = None
 except Exception as _rasterio_error:
     rasterio = None
     rowcol = None
-    Window = None
     RASTERIO_IMPORT_ERROR = str(_rasterio_error)
 
 import folium
@@ -167,6 +162,12 @@ def _get_groq_client():
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is missing. Add it in Streamlit Secrets or environment variables.")
     return Groq(api_key=api_key)
+
+# Public demo mode hides proprietary formulas, coefficients, and correction notes.
+# Set ICCRE_INTERNAL_MODE="true" in Streamlit Secrets to expose internal methodology/calibration screens.
+INTERNAL_MODE = str(_secret_or_env("ICCRE_INTERNAL_MODE", "false")).lower() in {"1", "true", "yes", "y"}
+PUBLIC_MODE = not INTERNAL_MODE
+
 # ============================================================
 # GIS FILE LOADER — downloads large files from cloud storage
 # on first run so they don't need to be in the GitHub repo
@@ -200,6 +201,9 @@ def _ensure_gis_files():
                 failed.append(f"{local_path}: {e}")
     return failed
 
+_gis_missing = _ensure_gis_files()
+if _gis_missing:
+    st.sidebar.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
 if RASTERIO_IMPORT_ERROR:
     st.sidebar.warning("⚠️ Rasterio failed to import. Flood layer will be disabled, but other modules can still run.")
 # ============================================================
@@ -326,6 +330,91 @@ def _hex_rgba(hex_color: str, alpha: float) -> str:
         return f"rgba(6,182,212,{alpha})"   # safe fallback
     r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+# ============================================================
+# PUBLIC UI HELPERS — result cards + output-scope labels
+# ============================================================
+def _fmt_money_cr(v, decimals=1):
+    try:
+        return f"₹{float(v):,.{decimals}f} Cr"
+    except Exception:
+        return "—"
+
+def _fmt_pct(v, decimals=2):
+    try:
+        return f"{float(v):.{decimals}%}"
+    except Exception:
+        return "—"
+
+def _fmt_num(v, suffix="", decimals=2):
+    try:
+        return f"{float(v):,.{decimals}f}{suffix}"
+    except Exception:
+        return "—"
+
+def scope_badge(scope: str, detail: str = ""):
+    """Render a clear distinction between reporting-year and multi-year outputs."""
+    if "single" in scope.lower() or "reporting" in scope.lower():
+        label = f"📅 Reporting-Year Snapshot"
+        color = C["mint"]
+    elif "multi" in scope.lower() or "scenario" in scope.lower():
+        label = f"📈 Multi-Year Scenario Projection"
+        color = C["accent2"]
+    else:
+        label = scope
+        color = C["amber"]
+    extra = f" · {detail}" if detail else ""
+    st.markdown(
+        f"<div class='scope-badge' style='border-left:4px solid {color};'>"
+        f"<span>{label}</span><small>{extra}</small></div>",
+        unsafe_allow_html=True
+    )
+
+def metric_card(title, value, subtitle="", accent=None, scope=""):
+    """Non-truncating KPI card replacing st.metric for market-facing result boxes."""
+    accent = accent or C["accent2"]
+    scope_html = f"<div class='metric-scope'>{scope}</div>" if scope else ""
+    st.markdown(f"""
+    <div class="metric-card-pro">
+      <div class="metric-title-pro">{title}</div>
+      <div class="metric-value-pro" style="color:{accent};">{value}</div>
+      {f"<div class='metric-subtitle-pro'>{subtitle}</div>" if subtitle else ""}
+      {scope_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_metric_grid(items, columns=3):
+    """items: list of dict(title, value, subtitle, accent, scope). Uses rows to avoid overlap."""
+    if not items:
+        return
+    for i in range(0, len(items), columns):
+        cols = st.columns(columns)
+        for col, item in zip(cols, items[i:i+columns]):
+            with col:
+                metric_card(
+                    item.get("title", ""),
+                    item.get("value", "—"),
+                    item.get("subtitle", ""),
+                    item.get("accent", C["accent2"]),
+                    item.get("scope", ""),
+                )
+
+def clean_scenario_legend(fig, orientation="h"):
+    """Move legends to a clean bottom position to avoid plot-title overlap."""
+    fig.update_layout(
+        legend=dict(
+            orientation=orientation,
+            yanchor="top",
+            y=-0.18 if orientation == "h" else 1,
+            xanchor="center" if orientation == "h" else "left",
+            x=0.5 if orientation == "h" else 1.02,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=10, color=C["off_white"]),
+        ),
+        margin=dict(l=55, r=30, t=70, b=95 if orientation == "h" else 45),
+    )
+    return fig
 
 # ============================================================
 # LOGGING
@@ -584,6 +673,69 @@ p, span, label, div {{ color: {C["text"]} !important; }}
 /* ── MISC ───────────────────────────────────────────────── */
 hr {{ border-color: {C["bg_mid"]} !important; }}
 code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; border-radius: 4px; font-family: 'IBM Plex Mono', monospace !important; }}
+
+/* ── PUBLIC RESULT CARDS — no text truncation ───────────── */
+.metric-card-pro {
+    background: linear-gradient(135deg, #0D3B4A 0%, #0B4D4B 100%);
+    border: 1px solid #115E6D;
+    border-radius: 12px;
+    padding: 16px 14px;
+    min-height: 126px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+.metric-title-pro {
+    color: #E6F1F5 !important;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    white-space: normal !important;
+    line-height: 1.25;
+}
+.metric-value-pro {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: clamp(20px, 2.4vw, 30px);
+    font-weight: 800;
+    line-height: 1.08;
+    white-space: normal !important;
+}
+.metric-subtitle-pro {
+    color: #94A3B8 !important;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal !important;
+}
+.metric-scope {
+    margin-top: 4px;
+    color: #80ED99 !important;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+.scope-badge {
+    background: rgba(13,59,74,.85);
+    border: 1px solid #115E6D;
+    border-radius: 9px;
+    padding: 10px 13px;
+    margin: 12px 0 10px;
+}
+.scope-badge span {
+    color: #FFFFFF !important;
+    font-size: 13px;
+    font-weight: 800;
+}
+.scope-badge small {
+    color: #94A3B8 !important;
+    font-size: 11px;
+    margin-left: 8px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -677,26 +829,114 @@ for k, v in _DEFAULTS.items():
         st.session_state[k] = v
 
 # ============================================================
-# SECTOR CONSTANTS
+# SECTOR PARAMETER REGISTRY
 # ============================================================
-SECTOR_CORRELATION = {"Steel": 0.35, "Power": 0.30, "Cement": 0.32, "Oil & Gas": 0.40, "Manufacturing": 0.25}
-SECTOR_GDP_SENSITIVITY = {"Steel": 1.20, "Power": 0.70, "Cement": 1.10, "Oil & Gas": 0.90, "Manufacturing": 1.00}
-SECTOR_CARBON_DEMAND = {"Steel": -0.25, "Power": -0.10, "Cement": -0.20, "Oil & Gas": -0.30, "Manufacturing": -0.15}
+# Public-ready alternative to scattered hard-coded constants:
+# 1) All sector assumptions live in one versioned registry.
+# 2) Values can be overridden with a zero-cost local file:
+#       Data/sector_parameter_overrides.csv
+#    columns: sector, parameter, value
+# 3) Ranges and confidence labels are tracked for governance.
+SECTOR_PARAMETER_REGISTRY = {
+    "Steel": {
+        "transition_physical_corr": 0.35, "gdp_sensitivity": 1.20, "carbon_demand": -0.25,
+        "alpha_dscr": 1.10, "beta_carbon_credit": 1.40, "gamma_physical": 0.60, "delta_gdp": 0.80,
+        "carbon_vol": 0.25, "physical_vol": 0.20, "gdp_vol": 0.05, "spread_sensitivity": 1.40,
+        "ghg_p25": 1.8, "ghg_p50": 2.8, "ghg_p75": 4.2, "energy_p50": 125, "energy_p75": 180,
+        "confidence": "Medium", "basis": "Sector-intensity expert benchmark; calibrate with borrower data when available."
+    },
+    "Power": {
+        "transition_physical_corr": 0.30, "gdp_sensitivity": 0.70, "carbon_demand": -0.10,
+        "alpha_dscr": 1.00, "beta_carbon_credit": 1.60, "gamma_physical": 0.50, "delta_gdp": 0.60,
+        "carbon_vol": 0.22, "physical_vol": 0.18, "gdp_vol": 0.04, "spread_sensitivity": 1.20,
+        "ghg_p25": 3.2, "ghg_p50": 5.1, "ghg_p75": 7.8, "energy_p50": 85, "energy_p75": 130,
+        "confidence": "Medium", "basis": "High carbon-price sensitivity with partial pass-through; calibrate locally."
+    },
+    "Cement": {
+        "transition_physical_corr": 0.32, "gdp_sensitivity": 1.10, "carbon_demand": -0.20,
+        "alpha_dscr": 1.05, "beta_carbon_credit": 1.20, "gamma_physical": 0.55, "delta_gdp": 0.70,
+        "carbon_vol": 0.23, "physical_vol": 0.19, "gdp_vol": 0.05, "spread_sensitivity": 1.30,
+        "ghg_p25": 2.1, "ghg_p50": 3.4, "ghg_p75": 5.0, "energy_p50": 110, "energy_p75": 160,
+        "confidence": "Medium", "basis": "Energy/process-emission heavy sector; use plant-level calibration when available."
+    },
+    "Oil & Gas": {
+        "transition_physical_corr": 0.40, "gdp_sensitivity": 0.90, "carbon_demand": -0.30,
+        "alpha_dscr": 0.90, "beta_carbon_credit": 1.50, "gamma_physical": 0.65, "delta_gdp": 0.50,
+        "carbon_vol": 0.30, "physical_vol": 0.22, "gdp_vol": 0.06, "spread_sensitivity": 1.50,
+        "ghg_p25": 1.4, "ghg_p50": 2.2, "ghg_p75": 3.5, "energy_p50": 70, "energy_p75": 110,
+        "confidence": "Medium", "basis": "Transition and stranded-asset sensitive; refine by business mix."
+    },
+    "Manufacturing": {
+        "transition_physical_corr": 0.25, "gdp_sensitivity": 1.00, "carbon_demand": -0.15,
+        "alpha_dscr": 1.00, "beta_carbon_credit": 0.80, "gamma_physical": 0.40, "delta_gdp": 0.90,
+        "carbon_vol": 0.20, "physical_vol": 0.15, "gdp_vol": 0.04, "spread_sensitivity": 1.00,
+        "ghg_p25": 0.8, "ghg_p50": 1.4, "ghg_p75": 2.6, "energy_p50": 60, "energy_p75": 95,
+        "confidence": "Medium", "basis": "Generic diversified-manufacturing fallback; override for sub-sector."
+    },
+}
+
+PARAMETER_BOUNDS = {
+    "transition_physical_corr": (0.00, 0.80),
+    "gdp_sensitivity": (0.20, 2.00),
+    "carbon_demand": (-1.50, 0.20),
+    "alpha_dscr": (0.20, 2.50),
+    "beta_carbon_credit": (0.10, 3.00),
+    "gamma_physical": (0.10, 2.00),
+    "delta_gdp": (0.00, 2.00),
+    "carbon_vol": (0.01, 0.80),
+    "physical_vol": (0.01, 0.80),
+    "gdp_vol": (0.005, 0.20),
+    "spread_sensitivity": (0.10, 3.00),
+}
+
+@st.cache_data
+def load_sector_parameter_registry():
+    """Load local zero-cost overrides if provided; otherwise use embedded registry."""
+    reg = {k: v.copy() for k, v in SECTOR_PARAMETER_REGISTRY.items()}
+    override_paths = [Path("Data/sector_parameter_overrides.csv"), Path("data/sector_parameter_overrides.csv")]
+    for op in override_paths:
+        if op.exists():
+            try:
+                odf = pd.read_csv(op)
+                for _, row in odf.iterrows():
+                    sec = str(row.get("sector", "")).strip()
+                    par = str(row.get("parameter", "")).strip()
+                    if sec in reg and par in reg[sec]:
+                        val = float(row.get("value"))
+                        if par in PARAMETER_BOUNDS:
+                            lo, hi = PARAMETER_BOUNDS[par]
+                            val = float(np.clip(val, lo, hi))
+                        reg[sec][par] = val
+                        reg[sec]["basis"] = "Local override file: Data/sector_parameter_overrides.csv"
+            except Exception:
+                pass
+            break
+    return reg
+
+_SECTOR_REG = load_sector_parameter_registry()
+
+def _reg_value(sector_name, key, fallback=None):
+    return _SECTOR_REG.get(sector_name, _SECTOR_REG["Manufacturing"]).get(key, fallback)
+
+SECTOR_CORRELATION = {s: v["transition_physical_corr"] for s, v in _SECTOR_REG.items()}
+SECTOR_GDP_SENSITIVITY = {s: v["gdp_sensitivity"] for s, v in _SECTOR_REG.items()}
+SECTOR_CARBON_DEMAND = {s: v["carbon_demand"] for s, v in _SECTOR_REG.items()}
 SECTOR_CREDIT_PARAMS = {
-    "Steel":         {"alpha_dscr": 1.10, "beta_carbon_credit": 1.40, "gamma_physical": 0.60, "delta_gdp": 0.80},
-    "Power":         {"alpha_dscr": 1.00, "beta_carbon_credit": 1.60, "gamma_physical": 0.50, "delta_gdp": 0.60},
-    "Cement":        {"alpha_dscr": 1.05, "beta_carbon_credit": 1.20, "gamma_physical": 0.55, "delta_gdp": 0.70},
-    "Oil & Gas":     {"alpha_dscr": 0.90, "beta_carbon_credit": 1.50, "gamma_physical": 0.65, "delta_gdp": 0.50},
-    "Manufacturing": {"alpha_dscr": 1.00, "beta_carbon_credit": 0.80, "gamma_physical": 0.40, "delta_gdp": 0.90},
+    s: {
+        "alpha_dscr": v["alpha_dscr"],
+        "beta_carbon_credit": v["beta_carbon_credit"],
+        "gamma_physical": v["gamma_physical"],
+        "delta_gdp": v["delta_gdp"],
+    }
+    for s, v in _SECTOR_REG.items()
 }
 SECTOR_MC_PARAMS = {
-    "Steel":         {"carbon_vol": 0.25, "physical_vol": 0.20, "gdp_vol": 0.05},
-    "Power":         {"carbon_vol": 0.22, "physical_vol": 0.18, "gdp_vol": 0.04},
-    "Cement":        {"carbon_vol": 0.23, "physical_vol": 0.19, "gdp_vol": 0.05},
-    "Oil & Gas":     {"carbon_vol": 0.30, "physical_vol": 0.22, "gdp_vol": 0.06},
-    "Manufacturing": {"carbon_vol": 0.20, "physical_vol": 0.15, "gdp_vol": 0.04},
+    s: {"carbon_vol": v["carbon_vol"], "physical_vol": v["physical_vol"], "gdp_vol": v["gdp_vol"]}
+    for s, v in _SECTOR_REG.items()
 }
-SECTOR_SPREAD_SENSITIVITY = {"Steel": 1.4, "Power": 1.2, "Cement": 1.3, "Oil & Gas": 1.5, "Manufacturing": 1.0}
+SECTOR_SPREAD_SENSITIVITY = {s: v["spread_sensitivity"] for s, v in _SECTOR_REG.items()}
+
+# Kept as internal model-support structures; not exposed in public UI.
 SECTOR_PORTFOLIO_CORR = {
     "Steel":         {"Steel": 0.35, "Power": 0.25, "Cement": 0.30, "Oil & Gas": 0.28, "Manufacturing": 0.22},
     "Power":         {"Steel": 0.25, "Power": 0.40, "Cement": 0.27, "Oil & Gas": 0.35, "Manufacturing": 0.20},
@@ -712,10 +952,10 @@ SECTOR_CONTAGION = {
 SCENARIO_WEIGHTS = {"Current Policies": 0.5, "Nationally Determined Contributions (NDCs)": 0.3, "Net Zero 2050": 0.2}
 # Zero-cost production-readiness overlays. These are transparent management overlays,
 # not externally purchased/calibrated datasets.
-BRSR_MAX_GOVERNANCE_MULTIPLIER = 1.20  # max +20% relative PD impact at 150 bps BRSR score
+BRSR_MAX_GOVERNANCE_MULTIPLIER = 1.20
 SCENARIO_WEIGHTING_METHOD = "Management-weighted NGFS ECL"
 MODEL_LIMITATION_NOTE = (
-    "Sector coefficients and BRSR overlays are transparent management assumptions. "
+    "Sector parameters are versioned assumptions and can be overridden with client data. "
     "For regulated lending/provisioning, calibrate against borrower/default history."
 )
 SCENARIO_REGISTRY = {
@@ -724,16 +964,12 @@ SCENARIO_REGISTRY = {
     "Net Zero 2050": {"type": "Disorderly Transition", "temperature": "≈1.5°C", "policy_intensity": "High"},
 }
 SECTOR_GHG_BENCHMARKS = {
-    "Steel":         {"p25": 1.8, "p50": 2.8, "p75": 4.2},
-    "Power":         {"p25": 3.2, "p50": 5.1, "p75": 7.8},
-    "Cement":        {"p25": 2.1, "p50": 3.4, "p75": 5.0},
-    "Oil & Gas":     {"p25": 1.4, "p50": 2.2, "p75": 3.5},
-    "Manufacturing": {"p25": 0.8, "p50": 1.4, "p75": 2.6},
+    s: {"p25": v["ghg_p25"], "p50": v["ghg_p50"], "p75": v["ghg_p75"]}
+    for s, v in _SECTOR_REG.items()
 }
 SECTOR_ENERGY_BENCHMARKS = {
-    "Steel": {"p50": 125, "p75": 180}, "Power": {"p50": 85, "p75": 130},
-    "Cement": {"p50": 110, "p75": 160}, "Oil & Gas": {"p50": 70, "p75": 110},
-    "Manufacturing": {"p50": 60, "p75": 95},
+    s: {"p50": v["energy_p50"], "p75": v["energy_p75"]}
+    for s, v in _SECTOR_REG.items()
 }
 BRSR_PD_SPREAD = {
     "High GHG intensity (>P75)": 0.0035, "Low renewable energy (<20%)": 0.0018,
@@ -770,35 +1006,6 @@ def gaussian_copula_pd(pd_t, pd_p, rho):
     pd_p = np.clip(pd_p, 1e-6, 1-1e-6)
     z_t  = norm.ppf(pd_t); z_p = norm.ppf(pd_p)
     return float(np.clip(multivariate_normal.cdf([z_t, z_p], [0,0], [[1,rho],[rho,1]]), 0, 1))
-
-def brsr_governance_multiplier(brsr_pd_adj, cap=BRSR_MAX_GOVERNANCE_MULTIPLIER):
-    """
-    Convert BRSR risk from direct additive bps into a bounded relative governance overlay.
-    This is more conservative methodologically because BRSR weaknesses may overlap with
-    transition/physical preparedness and should not always be added as a separate PD block.
-    """
-    if brsr_pd_adj is None or brsr_pd_adj <= 0:
-        return 1.0
-    # 0.015 equals the existing 150 bps BRSR cap; map it to max +20% relative PD.
-    return float(np.clip(1.0 + (brsr_pd_adj / 0.015) * (cap - 1.0), 1.0, cap))
-
-def scenario_weighted_summary(df, metric, scenario_col="Scenario"):
-    """Return management-weighted scenario metric using SCENARIO_WEIGHTS.
-    Falls back to equal weights for unknown/custom scenarios.
-    """
-    if not isinstance(df, pd.DataFrame) or df.empty or metric not in df.columns or scenario_col not in df.columns:
-        return None
-    grp = df.groupby(scenario_col)[metric].max()
-    raw_weights = {s: SCENARIO_WEIGHTS.get(s, 1.0) for s in grp.index}
-    total_w = sum(raw_weights.values()) or 1.0
-    return float(sum(grp[s] * raw_weights[s] / total_w for s in grp.index))
-
-def model_confidence_label(has_validation=False, has_calibration=False):
-    if has_validation and has_calibration:
-        return "High — calibrated and validation-supported"
-    if has_validation or has_calibration:
-        return "Medium-High — partially evidenced"
-    return MODEL_CONFIDENCE_DEFAULT
 
 def simulate_carbon_price_path(start, years, drift=0.05, vol=0.25):
     prices = [start]
@@ -898,9 +1105,9 @@ st.sidebar.markdown(
 )
 
 demo_col1, demo_col2 = st.sidebar.columns(2)
-load_demo = demo_col1.button("🎬 Load Demo", width="stretch",
+load_demo = demo_col1.button("🎬 Load Demo", use_container_width=True,
     help="Load Bharat Steel Industries Ltd — a pre-configured demo that produces compelling, realistic output in one click.")
-clear_demo = demo_col2.button("🗑️ Reset", width="stretch",
+clear_demo = demo_col2.button("🗑️ Reset", use_container_width=True,
     help="Clear all results and inputs.")
 
 if load_demo:
@@ -914,7 +1121,7 @@ if clear_demo:
         "transition_ran","physical_ran","targets_ran","brsr_ran","integrated_ran",
         "results_ready","df_transition","df_transition_summary","df_target",
         "df_target_effect","phys_summary","phys_assets","df_physical_projection",
-        "brsr_summary","brsr_flags","brsr_pd_adj","brsr_target_uplift",
+        "brsr_summary","brsr_flags","brsr_pd_adj","brsr_target_overlay",
         "brsr_pd_reduction","brsr_remaining_flags","df_integrated_summary",
         "mc_results","multi_year_results","calibrated_params",
         "historical_data","validation_results","ai_outputs",
@@ -1138,7 +1345,6 @@ if any_ran:
         _title(ws_sum, f"ICCRE v{MODEL_VERSION} — Climate Risk Summary: {company_name}")
         gov_rows = [
             ("Model Version", MODEL_VERSION), ("Engine", ENGINE_BUILD),
-            ("Model Use", MODEL_USE_NOTE),
             ("NGFS Data", NGFS_DATA_VERSION), ("Build Date", MODEL_BUILD_DATE),
             ("Company", company_name), ("Sector", sector),
             ("Reporting Year", REPORTING_YEAR), ("Baseline Scenario", BASELINE_SCENARIO),
@@ -1163,7 +1369,7 @@ if any_ran:
                 df_sum_data.append({"Metric":"Physical Risk PD","Value":f"{ps_x.get('Physical Risk PD',0):.4f}"})
                 df_sum_data.append({"Metric":"Physical ΔECL (₹ Cr)","Value":f"{ps_x.get('ΔECL (₹ Cr)',0):.2f}"})
         if st.session_state.get("brsr_ran"):
-            df_sum_data.append({"Metric":"BRSR PD Uplift (bps)","Value":f"{st.session_state.get('brsr_pd_adj',0)*10000:.1f}"})
+            df_sum_data.append({"Metric":"BRSR Governance Signal (bps)","Value":f"{st.session_state.get('brsr_pd_adj',0)*10000:.1f}"})
         if st.session_state.get("mc_results"):
             mc_x = st.session_state["mc_results"]
             df_sum_data.append({"Metric":"MC Mean PD","Value":f"{mc_x.get('Mean_PD',0):.4f}"})
@@ -1194,8 +1400,6 @@ if any_ran:
             ("Governance Score (G)", round(G, 3)),
             ("NGFS Data Version", NGFS_DATA_VERSION),
             ("Model Version", MODEL_VERSION),
-            ("Model Limitation Note", MODEL_LIMITATION_NOTE),
-            ("Scenario Weighting", SCENARIO_WEIGHTING_METHOD),
         ]
         df_ass = pd.DataFrame(assumptions, columns=["Parameter", "Value"])
         _write_df(ws_ass, df_ass, start_row=3)
@@ -1273,7 +1477,7 @@ if any_ran:
             data=xlsx_bytes,
             file_name=f"ICCRE_{company_name.replace(' ','_')}_{REPORTING_YEAR}_{datetime.utcnow().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
+            use_container_width=True,
             help="Downloads all results, assumptions, and model governance in a multi-sheet Excel workbook",
         )
     else:
@@ -1300,7 +1504,7 @@ if any_ran:
         data=_json.dumps(_export_payload, indent=2, default=str).encode(),
         file_name=f"ICCRE_{company_name.replace(' ','_')}_{REPORTING_YEAR}.json",
         mime="application/json",
-        width="stretch",
+        use_container_width=True,
         help="Lightweight JSON export of key results and assumptions",
     )
 else:
@@ -1429,14 +1633,14 @@ def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_rev
         total_ebitda_cr, interest_cr, baseline_pd, lgd, ead_cr, gamma_phys=0.5,
         dscr_sensitivity=1.0, pd_floor=0.0005, pd_cap=0.35):
     """
-    PHYS-01: transparent illustrative damage multiplier replaces flat 1+0.25*ΔT
+    PHYS-01: IPCC AR6 damage function replaces flat 1+0.25*ΔT
     damage_mult = 1 + 0.20·ΔT + 0.04·ΔT²
     P10/P90 uncertainty: σ = 0.08·ΔT
     """
     records = []
     for _, row in df_ngfs_temp.iterrows():
         dt = row["Delta_T_vs_Baseline"]
-        # Transparent non-linear damage multiplier (assumption; replaces 0.25*dt)
+        # IPCC AR6 non-linear damage (replaces 0.25*dt)
         dm       = 1.0 + 0.20*dt + 0.04*dt**2
         sigma    = 0.08*dt
         dm_p10   = max(1.0, dm-1.645*sigma)
@@ -1612,7 +1816,7 @@ with dashboard_tab:
         if ecl_t is not None:  kpis.append(("Max ECL",f"₹{ecl_t:,.1f} Cr",C["amber"],"Expected credit loss"))
         if dscr_t is not None: kpis.append(("Min DSCR",f"{dscr_t:.2f}×",C["coral"] if dscr_t<1.2 else C["mint"],"Debt service coverage"))
         if pd_p is not None:   kpis.append(("Physical PD",f"{pd_p:.2%}",C["coral"],"Asset-level physical risk"))
-        if brsr_pd is not None:kpis.append(("BRSR PD Uplift",f"+{brsr_pd*10000:.0f} bps",C["purple"],"Operational climate risk"))
+        if brsr_pd is not None:kpis.append(("BRSR Governance Signal",f"+{brsr_pd*10000:.0f} bps",C["purple"],"Operational climate risk"))
         if stranded_t is not None: kpis.append(("Stranded Assets",f"₹{stranded_t:,.0f} Cr",C["amber"],"High-carbon asset risk"))
 
         cols = st.columns(min(len(kpis),6))
@@ -1645,7 +1849,7 @@ with dashboard_tab:
                 fig_spark.update_layout(**_chart_layout("Transition PD Trajectory — All Scenarios",260))
                 fig_spark.update_yaxes(tickformat=".1%")
                 _ax_style(fig_spark)
-                st.plotly_chart(fig_spark,width="stretch")
+                st.plotly_chart(fig_spark,use_container_width=True)
 
             with col_gauge:
                 if pd_t is not None:
@@ -1669,7 +1873,7 @@ with dashboard_tab:
                         title={"text":"Peak PD","font":{"color":C["slate"],"size":12}}
                     ))
                     fig_g.update_layout(height=200,paper_bgcolor=C["bg_dark"],margin=dict(l=10,r=10,t=30,b=10))
-                    st.plotly_chart(fig_g,width="stretch")
+                    st.plotly_chart(fig_g,use_container_width=True)
 
         # BRSR + Physical summary row
         if brsr_ran or physical_ran:
@@ -1682,7 +1886,7 @@ with dashboard_tab:
                     <div style="background:{C['card']};border:1px solid {C['bg_ocean']};border-radius:10px;padding:14px 16px;">
                       <div style="font-size:12px;color:{C['slate']};text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">BRSR Operational Risk</div>
                       <div style="font-size:26px;font-weight:600;color:{sev_color};font-family:monospace;">{risk_score}/100</div>
-                      <div style="font-size:13px;color:{sev_color};font-weight:600;">{sev_text} Risk · +{brsr_pd*10000:.0f} bps PD uplift</div>
+                      <div style="font-size:13px;color:{sev_color};font-weight:600;">{sev_text} Risk · +{brsr_pd*10000:.0f} bps risk overlay</div>
                     </div>""",unsafe_allow_html=True)
             if physical_ran and pd_p is not None:
                 with pcol:
@@ -1734,18 +1938,7 @@ with transition_tab:
     if not st.session_state.get("enable_transition",False):
         st.info("Enable **Transition Risk** in the sidebar to proceed.")
     else:
-        with st.expander("ℹ️ v1.1 Corrections Active",expanded=False):
-            st.markdown("""
-            | Fix | Description |
-            |-----|-------------|
-            | FIX-01 | β_transition (slider) and β_credit (sector table) separated |
-            | FIX-02 | Physical double-count removed from logit PD |
-            | FIX-03 | Price elasticity uses revenue₀ denominator |
-            | FIX-04 | DSCR gap is signed ± (Winsorised ±4/6) |
-            | FIX-05 | Two-step CPI carbon price conversion |
-            | FIX-06 | GDP single transmission path only |
-            | FIX-07 | MC GDP sign consistent with deterministic engine |
-            """)
+        # Public mode: internal correction notes hidden.
 
         all_scenarios = sorted(df_long["Scenario"].unique())
         selected_scenarios = st.multiselect("NGFS Scenarios",options=all_scenarios,default=all_scenarios)
@@ -1770,6 +1963,7 @@ with transition_tab:
             st.session_state["df_transition"]  = df_transition
             st.session_state["transition_ran"] = True
 
+            scope_badge("multi", "Transition outputs are calculated across all selected scenario years; headline cards show peak/worst value across the scenario path.")
             # Scenario summary table
             df_sum = (df_transition.groupby("Scenario").agg({
                 "Carbon_Burden":"max","EBITDA_Margin":"min","DSCR":"min",
@@ -1795,16 +1989,17 @@ with transition_tab:
                     .map(_color_pd, subset=["PD_Transition"])
                     .background_gradient(subset=["ECL_Transition"],cmap="Reds")
                     .set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-                width="stretch", hide_index=True
+                use_container_width=True, hide_index=True
             )
 
-            # Headline KPIs
+            # Headline KPIs — multi-year scenario peaks/worst values
             st.markdown("<h3 style='margin-top:16px;'>Headline Indicators</h3>",unsafe_allow_html=True)
-            k1,k2,k3,k4 = st.columns(4)
-            k1.metric("Max PD",f"{df_transition['PD_Transition'].max():.2%}")
-            k2.metric("Max ECL (₹ Cr)",f"{df_transition['ECL_Transition'].max():,.1f}")
-            k3.metric("Min DSCR",f"{df_transition['DSCR'].min():.2f}×")
-            k4.metric("Max Stranded (₹ Cr)",f"{df_transition['Stranded_Assets'].max():,.0f}")
+            render_metric_grid([
+                {"title":"Peak Transition PD", "value":_fmt_pct(df_transition['PD_Transition'].max()), "subtitle":"Highest PD across selected scenarios and years", "accent":C["accent2"], "scope":"Multi-year scenario"},
+                {"title":"Peak ECL", "value":_fmt_money_cr(df_transition['ECL_Transition'].max()), "subtitle":"Maximum expected credit loss across scenario path", "accent":C["amber"], "scope":"Multi-year scenario"},
+                {"title":"Minimum DSCR", "value":_fmt_num(df_transition['DSCR'].min(), "×", 2), "subtitle":"Worst debt-service capacity across scenario path", "accent":C["coral"] if df_transition['DSCR'].min()<1.2 else C["mint"], "scope":"Multi-year scenario"},
+                {"title":"Peak Stranded Assets", "value":_fmt_money_cr(df_transition['Stranded_Assets'].max(), 0), "subtitle":"Maximum high-carbon asset risk", "accent":C["purple"], "scope":"Multi-year scenario"},
+            ], columns=4)
 
             # Charts
             fig_pd = go.Figure()
@@ -1815,7 +2010,7 @@ with transition_tab:
             fig_pd.update_layout(**_chart_layout("PD Trajectory by NGFS Scenario",320))
             fig_pd.update_yaxes(tickformat=".1%")
             _ax_style(fig_pd)
-            st.plotly_chart(fig_pd,width="stretch")
+            st.plotly_chart(fig_pd,use_container_width=True)
 
             fig_ecl = go.Figure()
             for scen in df_transition["Scenario"].unique():
@@ -1824,7 +2019,7 @@ with transition_tab:
                     marker_color=_scen_color(scen),opacity=0.85))
             fig_ecl.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr) — All Scenarios",300),barmode="group")
             _ax_style(fig_ecl)
-            st.plotly_chart(fig_ecl,width="stretch")
+            st.plotly_chart(fig_ecl,use_container_width=True)
 
             fig_dscr = go.Figure()
             for scen in df_transition["Scenario"].unique():
@@ -1837,7 +2032,7 @@ with transition_tab:
                 annotation_text="1.5× threshold",annotation_font_color=C["amber"])
             fig_dscr.update_layout(**_chart_layout("DSCR Stress Trajectory",300))
             _ax_style(fig_dscr)
-            st.plotly_chart(fig_dscr,width="stretch")
+            st.plotly_chart(fig_dscr,use_container_width=True)
 
             st.success("✅ Transition Risk Engine v1.1 executed")
             log_model_run("Transition",{"company":company_name,"sector":sector,
@@ -1849,26 +2044,13 @@ with transition_tab:
 # ============================================================
 with physical_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>🌍 Physical Risk Engine</h2>",unsafe_allow_html=True)
-    st.caption("Asset-level GIS-based physical risk with NGFS-aligned temperature pathways and transparent damage assumptions")
+    st.caption("Asset-level GIS-based physical risk with NGFS-aligned temperature pathways and IPCC AR6 damage functions")
 
     if not st.session_state.get("enable_physical",False):
         st.info("Enable **Physical Risk** in the sidebar.")
     else:
-        _gis_missing = _ensure_gis_files()
-        if _gis_missing:
-            st.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
-
-        with st.expander("📐 Methodology: v1.2 corrections",expanded=False):
-            st.markdown("""
-            **v1.1 (old):** `proj_loss = TOTAL_REV_LOSS × (1 + 0.25 × ΔT)` — flat multiplier, no citation.
-
-            **v1.2 (corrected):**
-            - Damage multiplier: `1 + 0.20·ΔT + 0.04·ΔT²` (transparent illustrative assumption; user-review required)
-            - ΔT from NGFS scenario temperature pathways (same data as transition engine)
-            - P10/P50/P90 uncertainty bands: `σ = 0.08 × ΔT`
-            - Signed DSCR gap consistent with FIX-04
-            - Chronic (temperature-driven) vs acute (event-driven) loss split
-            """)
+        # Public mode: detailed physical methodology notes hidden.
+        scope_badge("single", f"Physical KPI cards use the selected reporting year: {REPORTING_YEAR}")
 
         st.subheader("🏭 Asset Register")
         asset_df = st.data_editor(pd.DataFrame({
@@ -1877,7 +2059,7 @@ with physical_tab:
             "latitude":[22.80,23.55,20.32],"longitude":[86.20,87.32,86.61],
             "revenue_inr_cr":[3500.0,2000.0,1200.0],
             "base_pd":[0.015,0.015,0.015],"lgd":[0.45,0.45,0.45],
-        }),num_rows="dynamic",width="stretch")
+        }),num_rows="dynamic",use_container_width=True)
 
         fc1,fc2 = st.columns(2)
         EBITDA_MARGIN_PHYS = float(fc1.number_input("EBITDA Margin",value=float(ebitda_margin_0),step=0.01,key="phys_em"))
@@ -1906,32 +2088,17 @@ with physical_tab:
 
             with st.spinner("Extracting hazard data..."):
                 # Flood
-                # Memory-safe raster access: read only a small window around each asset.
-                # Avoid src.read(1), which loads the full GeoTIFF and can crash Streamlit Cloud.
                 flood_vals=[]
                 try:
-                    if rasterio is None or rowcol is None or Window is None:
-                        raise RuntimeError(RASTERIO_IMPORT_ERROR or "rasterio unavailable")
                     with rasterio.open(r"Data/floodMapGL_rp100y.tif") as src:
-                        pk=max(abs(src.res[0])*111, 1e-6)
-                        bp=max(1, int(5/pk))
+                        arr=src.read(1); pk=abs(src.res[0])*111; bp=int(5/pk)
                         for _,a in df.iterrows():
                             try:
                                 ri,ci=rowcol(src.transform,a["longitude"],a["latitude"])
-                                r0=max(0,ri-bp); r1=min(src.height,ri+bp)
-                                c0=max(0,ci-bp); c1=min(src.width,ci+bp)
-                                if r1<=r0 or c1<=c0:
-                                    flood_vals.append(0.0); continue
-                                win=Window(c0,r0,c1-c0,r1-r0)
-                                w=src.read(1, window=win, masked=True)
-                                v=w.compressed() if hasattr(w, "compressed") else w.ravel()
-                                v=v[(v>0)&(v<100)]
-                                flood_vals.append(float(v.max()) if v.size else 0.0)
-                            except Exception:
-                                flood_vals.append(0.0)
-                except Exception as e:
-                    st.warning(f"Flood layer skipped: {e}")
-                    flood_vals=[0.0]*len(df)
+                                w=arr[max(0,ri-bp):min(arr.shape[0],ri+bp),max(0,ci-bp):min(arr.shape[1],ci+bp)]
+                                v=w[(w>0)&(w<100)]; flood_vals.append(float(v.max()) if v.size else 0.0)
+                            except: flood_vals.append(0.0)
+                except: flood_vals=[0.0]*len(df)
                 df["flood_depth_m"]=flood_vals
 
                 # Heat
@@ -1948,32 +2115,14 @@ with physical_tab:
 
                 # Cyclone
                 try:
-                    cyc=pd.read_csv(
-                        r"Data/ibtracs.NI.list.v04r01.csv",
-                        usecols=["LAT","LON","USA_WIND"],
-                        low_memory=False
-                    )
+                    cyc=pd.read_csv(r"Data/ibtracs.NI.list.v04r01.csv")[["LAT","LON","USA_WIND"]]
                     cyc=cyc.apply(pd.to_numeric,errors="coerce").dropna()
                     cyc["wind_kmh"]=cyc["USA_WIND"]*1.852
-                except Exception as e:
-                    st.warning(f"Cyclone layer skipped: {e}")
-                    cyc=pd.DataFrame(columns=["LAT","LON","wind_kmh"])
-
+                except: cyc=pd.DataFrame(columns=["LAT","LON","wind_kmh"])
                 def max_wind(a):
-                    if cyc.empty:
-                        return 0.0
-                    try:
-                        lat1=np.radians(float(a["latitude"]))
-                        lon1=np.radians(float(a["longitude"]))
-                        lat2=np.radians(cyc["LAT"].astype(float).to_numpy())
-                        lon2=np.radians(cyc["LON"].astype(float).to_numpy())
-                        dlat=lat2-lat1; dlon=lon2-lon1
-                        h=np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
-                        d=6371*2*np.arcsin(np.sqrt(h))
-                        vals=cyc.loc[d<=100,"wind_kmh"]
-                        return float(vals.max()) if len(vals)>0 else 0.0
-                    except Exception:
-                        return 0.0
+                    if cyc.empty: return 0.0
+                    dists=cyc.apply(lambda r: haversine(a["latitude"],a["longitude"],r["LAT"],r["LON"]),axis=1)
+                    nb=cyc.loc[dists<=100,"wind_kmh"]; return float(nb.max()) if len(nb)>0 else 0.0
                 df["max_wind_kmh"]=df.apply(max_wind,axis=1)
 
                 df["H_flood"]=df["flood_depth_m"].apply(flood_damage)
@@ -2005,14 +2154,17 @@ with physical_tab:
             st.session_state["physical_ran"]=True
             st.success("✅ Physical Risk Engine v1.2 executed")
 
-            # Summary KPIs
-            pc1,pc2,pc3,pc4,pc5=st.columns(5)
-            pc1.metric("Total Revenue Loss",f"₹{TOTAL_REV_LOSS:.1f} Cr")
-            pc2.metric("EBITDA Impact",f"₹{DELTA_EBITDA:.1f} Cr")
-            pc3.metric("Post-Risk DSCR",f"{DSCR_PHYS_BASE:.2f}×")
-            pc4.metric("Physical PD",f"{PD_PHYS:.2%}")
-            pc5.metric("ΔECL",f"₹{DELTA_ECL:.2f} Cr")
+            # Summary KPIs — reporting-year snapshot, arranged in 3+2 layout to avoid overlap
+            scope_badge("single", f"Asset-level physical risk impact for reporting year {REPORTING_YEAR}")
+            render_metric_grid([
+                {"title":"Total Revenue Loss", "value":_fmt_money_cr(TOTAL_REV_LOSS), "subtitle":"Estimated annual loss from asset downtime", "accent":C["amber"], "scope":"Reporting year"},
+                {"title":"EBITDA Impact", "value":_fmt_money_cr(DELTA_EBITDA), "subtitle":"Revenue loss translated into EBITDA impact", "accent":C["coral"], "scope":"Reporting year"},
+                {"title":"Post-Risk DSCR", "value":_fmt_num(DSCR_PHYS_BASE, "×", 2), "subtitle":"Debt service capacity after physical-risk shock", "accent":C["mint"] if DSCR_PHYS_BASE>=1.2 else C["coral"], "scope":"Reporting year"},
+                {"title":"Physical Risk PD", "value":_fmt_pct(PD_PHYS), "subtitle":"Portfolio average physical-risk adjusted PD", "accent":C["accent2"], "scope":"Reporting year"},
+                {"title":"ΔECL", "value":_fmt_money_cr(DELTA_ECL, 2), "subtitle":"Incremental expected credit loss", "accent":C["purple"], "scope":"Reporting year"},
+            ], columns=3)
 
+            scope_badge("single", f"Asset-level hazard scores for reporting year {REPORTING_YEAR}")
             # Asset vulnerability heatmap
             st.subheader("🗺️ Asset Vulnerability Heatmap")
             score_map={"H_flood":"Flood","H_heat":"Heat","H_cyclone":"Cyclone"}
@@ -2023,7 +2175,7 @@ with physical_tab:
                 colorbar=dict(title="Risk Score"),zmin=0,zmax=100))
             fig_hm.update_layout(**_chart_layout("Hazard Vulnerability Scores by Asset (0=none, 100=max)",max(220,len(df)*45+80)))
             _ax_style(fig_hm)
-            st.plotly_chart(fig_hm,width="stretch")
+            st.plotly_chart(fig_hm,use_container_width=True)
 
             # Revenue loss stacked bar
             st.subheader("💸 Revenue Loss by Hazard")
@@ -2035,12 +2187,13 @@ with physical_tab:
                 if haz in df.columns:
                     fig_rev.add_trace(go.Bar(x=df["asset_id"],y=df[haz].fillna(0),name=col,marker_color=clr))
             fig_rev.update_layout(**_chart_layout("Revenue Loss Decomposition by Hazard (₹ Cr)",300),barmode="stack")
-            _ax_style(fig_rev); st.plotly_chart(fig_rev,width="stretch")
+            _ax_style(fig_rev); st.plotly_chart(fig_rev,use_container_width=True)
 
             # NGFS scenario fan charts (PHYS-01)
             if not df_phys_proj.empty:
+                scope_badge("multi", "Forward-looking physical-risk projection across the same scenario years as transition risk")
                 st.subheader("🌡️ NGFS Physical Risk Projections")
-                st.caption("Revenue loss under each NGFS scenario · illustrative damage multiplier · P10/P50/P90 uncertainty")
+                st.caption("Revenue loss under each NGFS scenario · IPCC AR6 damage function · P10/P50/P90 uncertainty")
                 tabs_scen = st.tabs(sorted(df_phys_proj["Scenario"].unique()))
                 for tab_s,scen in zip(tabs_scen,sorted(df_phys_proj["Scenario"].unique())):
                     with tab_s:
@@ -2063,7 +2216,7 @@ with physical_tab:
                         fig_f.add_trace(go.Bar(x=ds["Year"],y=ds["Chronic_Loss_Cr"],name="Chronic",marker_color=C["accent3"]),row=2,col=2)
                         fig_f.add_trace(go.Bar(x=ds["Year"],y=ds["Acute_Loss_Cr"],name="Acute",marker_color=C["coral"]),row=2,col=2)
                         fig_f.update_layout(**_chart_layout(f"{scen} — Physical Risk Projections",480),barmode="stack")
-                        _ax_style(fig_f,rows=2,cols=2); st.plotly_chart(fig_f,width="stretch")
+                        _ax_style(fig_f,rows=2,cols=2); st.plotly_chart(fig_f,use_container_width=True)
                         wr=ds.loc[ds["PD_Physical"].idxmax()]
                         c1p,c2p,c3p,c4p=st.columns(4)
                         c1p.metric("Worst Year",f"{int(wr['Year'])}"); c2p.metric("Peak Rev Loss",f"₹{wr['Revenue_Loss_P50_Cr']:.1f} Cr")
@@ -2110,7 +2263,7 @@ with targets_tab:
 
             # ── SECTION B: BRSR OPERATIONAL TARGETS ──
             st.markdown(f"<h3 style='color:{C['mint']};'>B · BRSR Operational Targets</h3>",unsafe_allow_html=True)
-            st.caption("Set SEBI BRSR Core improvement commitments. These reduce BRSR PD uplift as targets are met, feeding into Integrated Risk.")
+            st.caption("Set SEBI BRSR Core improvement commitments. These reduce BRSR risk overlay as targets are met, feeding into Integrated Risk.")
 
             brsr_ran_t = st.session_state.get("brsr_ran", False)
             current_brsr_pd = st.session_state.get("brsr_pd_adj", 0.0)
@@ -2125,7 +2278,7 @@ with targets_tab:
                     current_flags = bf_t["Flag"].tolist()
 
             if brsr_ran_t:
-                st.markdown(f"**Current state:** BRSR PD Uplift = **+{current_brsr_pd*10000:.0f} bps** · Readiness = **{current_readiness:.0f}%** · Active flags: **{len(current_flags)}**")
+                st.markdown(f"**Current state:** BRSR Governance Signal = **+{current_brsr_pd*10000:.0f} bps** · Readiness = **{current_readiness:.0f}%** · Active flags: **{len(current_flags)}**")
             else:
                 st.info("Run **BRSR Diagnostics** first to enable BRSR target planning.")
 
@@ -2142,7 +2295,7 @@ with targets_tab:
                 tgt_verified    = st.checkbox("Commit to Third-Party Verification", value=False, key="tgt_vd")
                 tgt_scope3      = st.checkbox("Commit Scope 3 Disclosure", value=True, key="tgt_s3")
 
-            # Compute BRSR target PD uplift reduction
+            # Compute BRSR target risk overlay reduction
             def _compute_brsr_target_pd(flags_in, tgt_ren, tgt_cov, tgt_hw, tgt_board, tgt_nz, tgt_vd, tgt_s3):
                 remaining_flags = []
                 for f in flags_in:
@@ -2152,20 +2305,20 @@ with targets_tab:
                     if f == "No verified emissions data"  and tgt_vd:         continue
                     if f == "Missing Scope 3 disclosure"  and tgt_s3:         continue
                     remaining_flags.append(f)
-                new_uplift = float(np.clip(sum(BRSR_PD_SPREAD.get(f,0) for f in remaining_flags), 0, 0.015))
-                return new_uplift, remaining_flags
+                new_overlay = float(np.clip(sum(BRSR_PD_SPREAD.get(f,0) for f in remaining_flags), 0, 0.015))
+                return new_overlay, remaining_flags
 
-            brsr_target_uplift, brsr_remaining_flags = _compute_brsr_target_pd(
+            brsr_target_overlay, brsr_remaining_flags = _compute_brsr_target_pd(
                 current_flags, tgt_renewable, tgt_coverage, tgt_hazwaste,
                 tgt_board, tgt_netzero, tgt_verified, tgt_scope3
             )
-            brsr_pd_reduction = current_brsr_pd - brsr_target_uplift
+            brsr_pd_reduction = current_brsr_pd - brsr_target_overlay
 
             # Preview BRSR target impact
             if brsr_ran_t:
                 tp1, tp2, tp3 = st.columns(3)
                 tp1.metric("Current BRSR Uplift", f"+{current_brsr_pd*10000:.0f} bps")
-                tp2.metric("Target BRSR Uplift",  f"+{brsr_target_uplift*10000:.0f} bps",
+                tp2.metric("Target BRSR Uplift",  f"+{brsr_target_overlay*10000:.0f} bps",
                            delta=f"-{brsr_pd_reduction*10000:.0f} bps", delta_color="normal")
                 tp3.metric("Flags Resolved",
                            f"{len(current_flags) - len(brsr_remaining_flags)} / {len(current_flags)}")
@@ -2183,7 +2336,7 @@ with targets_tab:
                 st.session_state["df_target"]=df_tgt; st.session_state["targets_ran"]=True
 
                 # Store BRSR target results
-                st.session_state["brsr_target_uplift"]   = brsr_target_uplift
+                st.session_state["brsr_target_overlay"]   = brsr_target_overlay
                 st.session_state["brsr_pd_reduction"]    = brsr_pd_reduction
                 st.session_state["brsr_remaining_flags"] = brsr_remaining_flags
 
@@ -2192,29 +2345,29 @@ with targets_tab:
                 eff["PD_Reduction_%"]=((eff["PD_Base_Max"]-eff["PD_Target_Max"])/eff["PD_Base_Max"]*100).round(2)
                 st.session_state["df_target_effect"]=eff
 
-                st.success("✅ Targets applied — BRSR target uplift saved to Integrated Risk tab")
+                st.success("✅ Targets applied — BRSR target overlay saved to Integrated Risk tab")
 
                 # ── Results display ──
                 col_r1, col_r2 = st.columns([1, 1])
                 with col_r1:
                     st.markdown(f"<h4 style='color:{C['accent2']};'>Financial Target Effectiveness</h4>",unsafe_allow_html=True)
                     st.dataframe(eff.style.format({"PD_Target_Max":"{:.3%}","PD_Base_Max":"{:.3%}","PD_Reduction_%":"{:.1f}%"})
-                        .background_gradient(subset=["PD_Reduction_%"],cmap="Greens"),width="stretch",hide_index=True)
+                        .background_gradient(subset=["PD_Reduction_%"],cmap="Greens"),use_container_width=True,hide_index=True)
 
                 with col_r2:
                     if brsr_ran_t and len(current_flags) > 0:
-                        st.markdown(f"<h4 style='color:{C['mint']};'>BRSR PD Uplift — Before vs After Targets</h4>",unsafe_allow_html=True)
+                        st.markdown(f"<h4 style='color:{C['mint']};'>BRSR Governance Signal — Before vs After Targets</h4>",unsafe_allow_html=True)
                         brsr_bar_labels = ["Current Uplift", "Target Uplift"]
-                        brsr_bar_vals   = [current_brsr_pd*10000, brsr_target_uplift*10000]
+                        brsr_bar_vals   = [current_brsr_pd*10000, brsr_target_overlay*10000]
                         fig_brsr_tgt = go.Figure(go.Bar(
                             x=brsr_bar_labels, y=brsr_bar_vals,
                             marker_color=[C["coral"], C["mint"]],
                             text=[f"{v:.0f} bps" for v in brsr_bar_vals], textposition="outside",
                         ))
-                        fig_brsr_tgt.update_layout(**_chart_layout("BRSR PD Uplift Reduction (bps)", 260),
+                        fig_brsr_tgt.update_layout(**_chart_layout("BRSR Governance Signal Reduction (bps)", 260),
                             yaxis_title="Basis Points")
                         _ax_style(fig_brsr_tgt)
-                        st.plotly_chart(fig_brsr_tgt, width="stretch")
+                        st.plotly_chart(fig_brsr_tgt, use_container_width=True)
 
                 # Baseline vs target PD chart
                 df_plot=df_base.merge(df_tgt,on=["Scenario","Year"],how="inner")
@@ -2225,21 +2378,21 @@ with targets_tab:
                         name=f"{scen[:20]} Baseline",line=dict(dash="dash",color=clr,width=1.5)))
                     fig_tgt.add_trace(go.Scatter(x=ds["Year"],y=ds["PD_Target"],mode="lines+markers",
                         name=f"{scen[:20]} + Financial Targets",line=dict(color=clr,width=2.5),marker=dict(size=6)))
-                # Show integrated target line (transition PD target + BRSR target uplift)
+                # Show integrated target line (transition PD target + BRSR target overlay)
                 if brsr_ran_t:
                     for scen in df_tgt["Scenario"].unique():
                         ds = df_tgt[df_tgt["Scenario"]==scen]
-                        pd_integ_target = np.clip(ds["PD_Target"] + brsr_target_uplift, PD_FLOOR, PD_CAP)
+                        pd_integ_target = np.clip(ds["PD_Target"] + brsr_target_overlay, PD_FLOOR, PD_CAP)
                         fig_tgt.add_trace(go.Scatter(x=ds["Year"], y=pd_integ_target, mode="lines",
                             name=f"{scen[:20]} + BRSR Target",
                             line=dict(color=C["mint"], width=1.5, dash="dot")))
                 fig_tgt.update_layout(**_chart_layout("PD — Baseline vs Financial Target vs Integrated (+ BRSR) Target", 340))
                 fig_tgt.update_yaxes(tickformat=".1%")
                 _ax_style(fig_tgt)
-                st.plotly_chart(fig_tgt, width="stretch")
+                st.plotly_chart(fig_tgt, use_container_width=True)
 
                 if brsr_ran_t:
-                    st.caption(f"**BRSR note:** Target renewable share {tgt_renewable}%, target coverage {tgt_coverage}%, target hazardous waste {tgt_hazwaste}%. These resolve {len(current_flags)-len(brsr_remaining_flags)} of {len(current_flags)} current BRSR flags, reducing PD uplift from +{current_brsr_pd*10000:.0f} bps to +{brsr_target_uplift*10000:.0f} bps. The dotted 'BRSR Target' line includes this reduction.")
+                    st.caption(f"**BRSR note:** Target renewable share {tgt_renewable}%, target coverage {tgt_coverage}%, target hazardous waste {tgt_hazwaste}%. These resolve {len(current_flags)-len(brsr_remaining_flags)} of {len(current_flags)} current BRSR flags, reducing risk overlay from +{current_brsr_pd*10000:.0f} bps to +{brsr_target_overlay*10000:.0f} bps. The dotted 'BRSR Target' line includes this reduction.")
             else:
                 st.info("Set targets above and click **Run Target Scenario**.")
 
@@ -2248,7 +2401,7 @@ with targets_tab:
 # ============================================================
 with integrated_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>🧩 Integrated Climate Risk</h2>",unsafe_allow_html=True)
-    st.caption("Gaussian copula joint PD · BRSR governance overlay · scenario-weighted ECL · capital assessment")
+    st.caption("Gaussian copula joint PD · BRSR overlay layer · Capital assessment · ICAAP metrics")
 
     transition_ran_i = st.session_state.get("transition_ran",False)
     physical_ran_i   = st.session_state.get("physical_ran",False)
@@ -2266,14 +2419,14 @@ with integrated_tab:
 
         correlation = st.slider("Transition–Physical Correlation (ρ)",0.0,0.6,default_correlation,0.05,key="corr_sl") if exec_mode=="combined" else default_correlation
 
-        # ── BRSR uplift — must be computed BEFORE the mode banner that references _brsr_label ──
-        # Use target uplift if targets have been run, else use current uplift
+        # ── BRSR overlay — must be computed BEFORE the mode banner that references _brsr_label ──
+        # Use target overlay if targets have been run, else use current overlay
         brsr_pd_adj  = 0.0
         _brsr_label  = "not run"        # safe default — overwritten below if BRSR ran
         if brsr_ran_i:
             targets_ran_i = st.session_state.get("targets_ran", False)
-            if targets_ran_i and "brsr_target_uplift" in st.session_state:
-                brsr_pd_adj = float(st.session_state["brsr_target_uplift"])
+            if targets_ran_i and "brsr_target_overlay" in st.session_state:
+                brsr_pd_adj = float(st.session_state["brsr_target_overlay"])
                 _brsr_label = "after targets"
             else:
                 brsr_pd_adj = float(st.session_state.get("brsr_pd_adj", 0.0))
@@ -2327,16 +2480,9 @@ with integrated_tab:
         elif pd_phys_scen is not None:
             pd_copula=pd_phys_scen
 
-        # Apply BRSR as a bounded governance/readiness multiplier, not a direct additive PD block.
-        # This reduces double-counting because poor BRSR performance can already affect transition
-        # and physical preparedness channels.
-        brsr_mult = brsr_governance_multiplier(brsr_pd_adj)
-        pd_integrated=float(np.clip(pd_copula*brsr_mult,PD_FLOOR,PD_CAP)) if pd_copula is not None else None
-
-        # Keep peak-stress ECL for risk appetite, and add a scenario-weighted ECL for market-ready reporting.
-        weighted_ecl_transition = scenario_weighted_summary(st.session_state.get("df_transition"), "ECL_Transition") or (ecl_trans or 0)
-        weighted_pd_transition  = scenario_weighted_summary(st.session_state.get("df_transition"), "PD_Transition") or (pd_trans or 0)
-        ecl_integrated=(weighted_ecl_transition or 0)+(ecl_phys or 0)
+        # Add BRSR overlay (additive, capped at PD_CAP)
+        pd_integrated=float(np.clip(pd_copula+brsr_pd_adj,PD_FLOOR,PD_CAP)) if pd_copula is not None else None
+        ecl_integrated=(ecl_trans or 0)+(ecl_phys or 0)
         dscr_integrated=min(d for d in [dscr_trans,dscr_phys] if d is not None) if any(d is not None for d in [dscr_trans,dscr_phys]) else None
 
         if pd_integrated is None:
@@ -2365,23 +2511,21 @@ with integrated_tab:
             <div style="font-size:18px;font-weight:700;color:{rag_color};">{rag_text}</div>
             <div style="font-size:13px;color:{C['slate']};margin-top:3px;">
               Integrated Risk Score: {risk_score_int}/100 · PD: {pd_integrated:.2%} · ECL/EAD: {ecl_ead_ratio:.2%}
-              {f' · BRSR factor: ×{brsr_mult:.2f}' if brsr_ran_i and brsr_pd_adj>0 else ''}
+              {f' · BRSR overlay: +{brsr_pd_adj*10000:.0f}bps' if brsr_ran_i and brsr_pd_adj>0 else ''}
             </div>
           </div>
         </div>""",unsafe_allow_html=True)
 
         # KPI grid
         ik1,ik2,ik3,ik4,ik5=st.columns(5)
-        ik1.metric("Integrated PD",f"{pd_integrated:.2%}",help="Gaussian copula × BRSR governance factor")
-        ik2.metric("Weighted Integrated ECL",f"₹{ecl_integrated:,.1f} Cr")
+        ik1.metric("Integrated PD",f"{pd_integrated:.2%}",help="Gaussian copula + BRSR overlay")
+        ik2.metric("Integrated ECL",f"₹{ecl_integrated:,.1f} Cr")
         ik3.metric("ECL / EAD",f"{ecl_ead_ratio:.2%}")
         ik4.metric("Min DSCR",f"{dscr_integrated:.2f}×" if dscr_integrated else "—")
         ik5.metric("Risk Score",f"{risk_score_int}/100")
 
-        if exec_mode=="combined":
-            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>Copula PD: {pd_copula:.2%} → BRSR factor ×{brsr_mult:.2f} ({_brsr_label}) → Total: {pd_integrated:.2%}</div>",unsafe_allow_html=True)
-        elif brsr_ran_i and brsr_pd_adj>0:
-            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>Transition PD: {pd_trans:.2%} → BRSR factor ×{brsr_mult:.2f} ({_brsr_label}) → Total: {pd_integrated:.2%}</div>",unsafe_allow_html=True)
+        if brsr_ran_i and brsr_pd_adj>0:
+            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>BRSR governance quality has been incorporated as a bounded overlay in the integrated risk score.</div>", unsafe_allow_html=True)
 
         st.divider()
 
@@ -2393,14 +2537,14 @@ with integrated_tab:
             if transition_ran_i and ecl_trans: sources.append("Transition"); values.append(ecl_trans)
             if exec_mode in ["physical_only","combined"] and ecl_phys: sources.append("Physical"); values.append(ecl_phys)
             if brsr_ran_i and brsr_pd_adj>0:
-                brsr_ecl_equiv=max(pd_integrated-(pd_copula or 0),0)*LGD_0*EAD/1e3; sources.append("BRSR Governance Overlay"); values.append(brsr_ecl_equiv)
+                brsr_ecl_equiv=brsr_pd_adj*LGD_0*EAD/1e3; sources.append("BRSR Operational"); values.append(brsr_ecl_equiv)
             if sources:
                 fig_dec=go.Figure(go.Pie(labels=sources,values=values,
                     hole=0.45,marker=dict(colors=[C["accent2"],C["coral"],C["purple"]][:len(sources)]),
                     textinfo="label+percent",hovertemplate="%{label}: ₹%{value:.1f} Cr<extra></extra>"))
                 fig_dec.update_layout(**_chart_layout("ECL Risk Decomposition",280),showlegend=False,
                     annotations=[dict(text=f"₹{ecl_integrated:.1f}Cr",x=0.5,y=0.5,font_size=14,font_color=C["white"],showarrow=False)])
-                st.plotly_chart(fig_dec,width="stretch")
+                st.plotly_chart(fig_dec,use_container_width=True)
         with dec_col2:
             if transition_ran_i:
                 df_ti3=st.session_state.get("df_transition")
@@ -2412,30 +2556,8 @@ with integrated_tab:
                             y=[ds["PD_Transition"].max()*100,ds["ECL_Transition"].max()/EAD*100,max(0,(1.5-ds["DSCR"].min())/1.5*100)],
                             name=scen[:25],marker_color=_scen_color(scen)))
                     fig_sc.update_layout(**_chart_layout("Risk Metrics by Scenario (normalised %)",280),barmode="group",yaxis_title="%")
-                    _ax_style(fig_sc); st.plotly_chart(fig_sc,width="stretch")
-
-        # ── GAUSSIAN COPULA METHODOLOGY TRANSPARENCY ──
-        if exec_mode=="combined":
-            with st.expander("🔢 Copula Integration: Full Working",expanded=False):
-                st.markdown(f"""
-                **Step 1 — Marginal PDs from each engine:**
-                - Transition PD: `{pd_trans:.4f}` (logit PD model, structural)
-                - Physical PD: `{pd_phys_scen:.4f}` (NGFS scenario-projected, IPCC damage function)
-                - Sector correlation ρ: `{correlation}`
-
-                **Step 2 — Transform to standard normal quantiles:**
-                - z_T = Φ⁻¹({pd_trans:.4f}) = `{norm.ppf(max(pd_trans,1e-6)):.4f}`
-                - z_P = Φ⁻¹({pd_phys_scen:.4f}) = `{norm.ppf(max(pd_phys_scen,1e-6)):.4f}`
-
-                **Step 3 — Bivariate normal CDF:**
-                - `PD_copula = Φ₂(z_T, z_P, ρ={correlation}) = {pd_copula:.4f}`
-
-                **Step 4 — BRSR governance/readiness overlay:**
-                - `BRSR_factor = {brsr_mult:.4f}`
-                - `PD_integrated = {pd_copula:.4f} × {brsr_mult:.4f} = {pd_integrated:.4f}`
-
-                **Why copula beats simple addition:** `PD_T + PD_P = {(pd_trans or 0)+(pd_phys_scen or 0):.4f}` vs copula `{pd_copula:.4f}` — copula captures correlation structure, prevents double-counting independent defaults.
-                """)
+                    _ax_style(fig_sc); st.plotly_chart(fig_sc,use_container_width=True)
+        # Public mode: proprietary integration working is hidden.
 
         # ── SCENARIO STRESS TABLE ──
         st.subheader("📊 Full Scenario Stress Matrix")
@@ -2457,7 +2579,7 @@ with integrated_tab:
                              "Stranded (₹Cr)":"{:.0f}","CAPEX Gap (₹Cr)":"{:.0f}"})
                     .background_gradient(subset=["Peak PD"],cmap="Reds")
                     .background_gradient(subset=["Min DSCR"],cmap="RdYlGn"),
-                    width="stretch",hide_index=True)
+                    use_container_width=True,hide_index=True)
 
         # ── ICAAP SUMMARY ──
         st.subheader("🏦 ICAAP Capital Assessment")
@@ -2473,21 +2595,18 @@ with integrated_tab:
         # ── ISSB S2 SUMMARY TABLE ──
         st.subheader("📋 ISSB S2–Aligned Integrated Summary")
         df_isummary=pd.DataFrame([
-            {"Metric":"Integrated PD (Copula × BRSR factor)","Value":f"{pd_integrated:.4f}","ISSB S2":"§15(a)"},
-            {"Metric":"Scenario-Weighted Integrated ECL (₹ Cr)","Value":f"{ecl_integrated:.2f}","ISSB S2":"§15(b)"},
-            {"Metric":"Weighted Transition PD","Value":f"{weighted_pd_transition:.4f}","ISSB S2":"§15(a)"},
+            {"Metric":"Integrated PD (Copula + BRSR)","Value":f"{pd_integrated:.4f}","ISSB S2":"§15(a)"},
+            {"Metric":"Integrated ECL (₹ Cr)","Value":f"{ecl_integrated:.2f}","ISSB S2":"§15(b)"},
             {"Metric":"Post-Stress DSCR","Value":f"{dscr_integrated:.2f}" if dscr_integrated else "—","ISSB S2":"§15(c)"},
             {"Metric":"ECL / EAD","Value":f"{ecl_ead_ratio:.4f}","ISSB S2":"§16"},
-            {"Metric":"BRSR Governance Factor","Value":f"x{brsr_mult:.3f}","ISSB S2":"§15(a) operational"},
+            {"Metric":"BRSR Governance Signal (bps)","Value":f"{brsr_pd_adj*10000:.1f}","ISSB S2":"§15(a) operational"},
             {"Metric":"Capital Stress Signal","Value":capital_signal,"ISSB S2":"§16"},
             {"Metric":"Integrated Risk Score (0–100)","Value":f"{risk_score_int}","ISSB S2":"§14–16"},
             {"Metric":"Stranded Assets (₹ Cr)","Value":f"{stranded_t:.0f}" if stranded_t else "—","ISSB S2":"§22"},
             {"Metric":"CAPEX Gap (₹ Cr)","Value":f"{capex_t:.0f}" if capex_t else "—","ISSB S2":"§14"},
-            {"Metric":"Model Confidence","Value":model_confidence_label(st.session_state.get("validation_results") is not None, st.session_state.get("calibrated_params") is not None),"ISSB S2":"Governance"},
-            {"Metric":"Model Use Limitation","Value":MODEL_USE_NOTE,"ISSB S2":"Governance"},
         ])
         st.dataframe(df_isummary.style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-            width="stretch",hide_index=True)
+            use_container_width=True,hide_index=True)
 
         st.session_state["df_integrated_summary"]=df_isummary
         st.session_state["integrated_ran"]=True
@@ -2521,7 +2640,7 @@ with integrated_tab:
                 pt=np.clip(sigmoid(lp),PD_FLOOR,PD_CAP)
                 pp=np.clip(pd_phys_scen*(1+pds),0,1) if physical_ran_i and pd_phys_scen else 0
                 pj=gaussian_copula_pd(pt,pp,correlation) if physical_ran_i else pt
-                pj=float(np.clip(pj*brsr_governance_multiplier(brsr_pd_adj),PD_FLOOR,PD_CAP))
+                pj=float(np.clip(pj+brsr_pd_adj,PD_FLOOR,PD_CAP))
                 lj=np.clip(LGD_0*(1+0.2*cbu+LGD_PHYSICAL_MULTIPLIER*pds),0,1)
                 pd_sim.append(pj); ecl_sim.append(pj*lj*EAD/1e3)
 
@@ -2539,7 +2658,7 @@ with integrated_tab:
             fig_mc.add_vline(x=ecl_95,line_dash="dash",line_color=C["coral"],annotation_text=f"VaR 95%: {ecl_95:.1f}",row=1,col=1)
             fig_mc.add_trace(go.Scatter(x=pd_sim,y=ecl_sim,mode="markers",marker=dict(color=C["accent3"],size=3,opacity=0.3),name="Simulation"),row=1,col=2)
             fig_mc.update_layout(**_chart_layout("Monte Carlo Results",320)); _ax_style(fig_mc,rows=1,cols=2)
-            st.plotly_chart(fig_mc,width="stretch")
+            st.plotly_chart(fig_mc,use_container_width=True)
             st.session_state["mc_results"]={"Mean_PD":pd_mean,"PD_95":pd_95,"Mean_ECL":ecl_mean,"ECL_95":ecl_95,"Climate_Capital_VaR":ecl_95}
             log_model_run("MonteCarlo",{"company":company_name,"pd_mean":pd_mean,"pd_95":pd_95,"ecl_95":ecl_95})
 
@@ -2605,7 +2724,7 @@ with plots_tab:
                     fig.update_layout(**_chart_layout("Probability of Default — All Scenarios", 300))
                     fig.update_yaxes(tickformat=".1%")
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
 
                 with col2:
                     fig = go.Figure()
@@ -2616,7 +2735,7 @@ with plots_tab:
                             hovertemplate="Year: %{x}<br>ECL: ₹%{y:.1f} Cr<extra>" + scen[:18] + "</extra>"))
                     fig.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr)", 300), barmode="group")
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
 
                 # Row 2: DSCR + Carbon Burden
                 col3, col4 = st.columns(2)
@@ -2633,7 +2752,7 @@ with plots_tab:
                         annotation_text="1.5× threshold", annotation_font_color=C["amber"])
                     fig.update_layout(**_chart_layout("DSCR Stress Trajectory", 300))
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
 
                 with col4:
                     fig = go.Figure()
@@ -2646,7 +2765,7 @@ with plots_tab:
                     fig.update_layout(**_chart_layout("Carbon Burden (% of Revenue)", 300))
                     fig.update_yaxes(ticksuffix="%")
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch")
+                    st.plotly_chart(fig, use_container_width=True)
 
                 # Row 3: EBITDA Margin + Stranded Assets + CAPEX Gap (3-panel subplot)
                 fig3 = make_subplots(rows=1, cols=3,
@@ -2666,7 +2785,7 @@ with plots_tab:
                     legend_override=dict(orientation="h", y=1.12)))
                 _ax_style(fig3, rows=1, cols=3)
                 fig3.update_yaxes(ticksuffix="%", row=1, col=1)
-                st.plotly_chart(fig3, width="stretch")
+                st.plotly_chart(fig3, use_container_width=True)
 
                 # Row 4: Carbon burden vs EBITDA scatter
                 fig_sc = go.Figure()
@@ -2682,7 +2801,7 @@ with plots_tab:
                 fig_sc.update_layout(**_chart_layout("Carbon Burden vs EBITDA Margin — Stress Path", 300))
                 fig_sc.update_xaxes(title="Carbon Burden (%)"); fig_sc.update_yaxes(title="EBITDA Margin (%)")
                 _ax_style(fig_sc)
-                st.plotly_chart(fig_sc, width="stretch")
+                st.plotly_chart(fig_sc, use_container_width=True)
 
         # ── SECTION 2: TARGETS COMPARISON ──────────────────────────────
         if tg_ran:
@@ -2705,7 +2824,7 @@ with plots_tab:
                     fig_tp.update_layout(**_chart_layout("PD — Baseline vs Target", 300))
                     fig_tp.update_yaxes(tickformat=".1%")
                     _ax_style(fig_tp)
-                    st.plotly_chart(fig_tp, width="stretch")
+                    st.plotly_chart(fig_tp, use_container_width=True)
 
                 with tc2:
                     fig_te = go.Figure()
@@ -2717,22 +2836,22 @@ with plots_tab:
                             name=f"{scen[:18]} Target", line=dict(color=clr, width=2.5), marker=dict(size=6)))
                     fig_te.update_layout(**_chart_layout("ECL — Baseline vs Target (₹ Cr)", 300))
                     _ax_style(fig_te)
-                    st.plotly_chart(fig_te, width="stretch")
+                    st.plotly_chart(fig_te, use_container_width=True)
 
                 # BRSR target comparison if available
-                if b_ran and "brsr_target_uplift" in st.session_state:
+                if b_ran and "brsr_target_overlay" in st.session_state:
                     curr_up   = st.session_state.get("brsr_pd_adj", 0) * 10000
-                    tgt_up    = st.session_state["brsr_target_uplift"] * 10000
+                    tgt_up    = st.session_state["brsr_target_overlay"] * 10000
                     reduction = curr_up - tgt_up
                     fig_bt = go.Figure()
-                    fig_bt.add_trace(go.Bar(name="Current BRSR Uplift", x=["BRSR PD Uplift"], y=[curr_up],
+                    fig_bt.add_trace(go.Bar(name="Current BRSR Uplift", x=["BRSR Governance Signal"], y=[curr_up],
                         marker_color=C["coral"], text=[f"{curr_up:.0f} bps"], textposition="outside"))
-                    fig_bt.add_trace(go.Bar(name="Post-Target Uplift", x=["BRSR PD Uplift"], y=[tgt_up],
+                    fig_bt.add_trace(go.Bar(name="Post-Target Uplift", x=["BRSR Governance Signal"], y=[tgt_up],
                         marker_color=C["mint"], text=[f"{tgt_up:.0f} bps"], textposition="outside"))
-                    fig_bt.update_layout(**_chart_layout(f"BRSR PD Uplift: {curr_up:.0f} → {tgt_up:.0f} bps (−{reduction:.0f} bps reduction)", 250),
+                    fig_bt.update_layout(**_chart_layout(f"BRSR Governance Signal: {curr_up:.0f} → {tgt_up:.0f} bps (−{reduction:.0f} bps reduction)", 250),
                         barmode="group", yaxis_title="Basis Points")
                     _ax_style(fig_bt)
-                    st.plotly_chart(fig_bt, width="stretch")
+                    st.plotly_chart(fig_bt, use_container_width=True)
 
         # ── SECTION 3: BRSR ANALYTICS ─────────────────────────────────
         if b_ran:
@@ -2761,9 +2880,9 @@ with plots_tab:
                     fig_gb.update_layout(**_chart_layout("GHG Intensity vs Sector Benchmarks (tCO₂/₹Cr)", 280))
                     fig_gb.update_yaxes(title="tCO₂e / ₹Cr")
                     _ax_style(fig_gb)
-                    st.plotly_chart(fig_gb, width="stretch")
+                    st.plotly_chart(fig_gb, use_container_width=True)
 
-                # BRSR PD uplift breakdown
+                # BRSR risk overlay breakdown
                 with bc2:
                     if isinstance(bf, pd.DataFrame) and "Flag" in bf.columns and len(bf) > 0:
                         flags_list = bf["Flag"].tolist()
@@ -2775,13 +2894,13 @@ with plots_tab:
                             text=[f"+{v:.0f} bps" for v in flag_bps.values()], textposition="outside",
                         ))
                         fig_fb.update_layout(
-                            **_chart_layout(f"BRSR Flags → PD Uplift (Total: +{sum(flag_bps.values()):.0f} bps)", 280,
+                            **_chart_layout(f"BRSR Flags → Risk Overlay (Total: +{sum(flag_bps.values()):.0f} bps)", 280,
                                 margin_override=dict(l=230, r=80, t=50, b=20)),
                         )
                         _ax_style(fig_fb)
-                        st.plotly_chart(fig_fb, width="stretch")
+                        st.plotly_chart(fig_fb, use_container_width=True)
                     else:
-                        st.success("✅ No BRSR flags — zero PD uplift from operational climate risk")
+                        st.success("✅ No BRSR flags — zero risk overlay from operational climate risk")
 
                 # Regulatory readiness radar
                 rdness_cols = {"Renewable ≥20%": float(row_b.get("Renewable_%",0))>=20,
@@ -2803,7 +2922,7 @@ with plots_tab:
                     **_chart_layout("SEBI BRSR Core Readiness", 320),
                     showlegend=True,
                 )
-                st.plotly_chart(fig_rad, width="stretch")
+                st.plotly_chart(fig_rad, use_container_width=True)
 
         # ── SECTION 4: PHYSICAL RISK ───────────────────────────────────
         if p_ran:
@@ -2823,7 +2942,7 @@ with plots_tab:
                             fig_rl.add_trace(go.Bar(x=phys["asset_id"], y=rl.fillna(0), name=col, marker_color=clr))
                     fig_rl.update_layout(**_chart_layout("Revenue Loss by Asset & Hazard (₹ Cr)", 300), barmode="stack")
                     _ax_style(fig_rl)
-                    st.plotly_chart(fig_rl, width="stretch")
+                    st.plotly_chart(fig_rl, use_container_width=True)
 
                 # Asset damage heatmap
                 with pc2:
@@ -2839,7 +2958,7 @@ with plots_tab:
                         ))
                         fig_hm.update_layout(**_chart_layout("Asset Vulnerability Heatmap (0–100)", 280))
                         _ax_style(fig_hm)
-                        st.plotly_chart(fig_hm, width="stretch")
+                        st.plotly_chart(fig_hm, use_container_width=True)
 
             # NGFS scenario projections fan chart
             if isinstance(df_pp, pd.DataFrame) and not df_pp.empty:
@@ -2866,7 +2985,7 @@ with plots_tab:
                 fig_fan.update_layout(**_chart_layout("Physical Revenue Loss — NGFS Scenarios · P10/P50/P90 Bands", 320,
                     legend_override=dict(orientation="h", y=1.1)))
                 _ax_style(fig_fan, rows=1, cols=len(scens_p))
-                st.plotly_chart(fig_fan, width="stretch")
+                st.plotly_chart(fig_fan, use_container_width=True)
 
                 # PD evolution across scenarios
                 fig_pd_p = go.Figure()
@@ -2878,7 +2997,7 @@ with plots_tab:
                 fig_pd_p.update_layout(**_chart_layout("Physical PD — NGFS Scenario Projections", 280))
                 fig_pd_p.update_yaxes(tickformat=".2%")
                 _ax_style(fig_pd_p)
-                st.plotly_chart(fig_pd_p, width="stretch")
+                st.plotly_chart(fig_pd_p, use_container_width=True)
 
             # Folium map
             if isinstance(phys, pd.DataFrame) and not phys.empty:
@@ -2894,7 +3013,7 @@ with plots_tab:
                         color=clr, fill=True, fill_opacity=0.78,
                         popup=f"<b>{r['asset_id']}</b><br>Risk: {v:.2f}<br>Rev Loss: ₹{r['revenue_loss']:.1f}Cr"
                     ).add_to(m)
-                st_folium(m, width=1200, height=400)
+                st_folium(m, use_container_width=True, height=400)
 
         # ── SECTION 5: INTEGRATED RISK SUMMARY CHART ──────────────────
         if st.session_state.get("integrated_ran", False):
@@ -2914,7 +3033,7 @@ with plots_tab:
                     ))
                     fig_int.update_layout(**_chart_layout("Integrated Risk Metrics (normalised values)", 280))
                     _ax_style(fig_int)
-                    st.plotly_chart(fig_int, width="stretch")
+                    st.plotly_chart(fig_int, use_container_width=True)
 
             # MC distribution if available
             mc = st.session_state.get("mc_results")
@@ -3055,14 +3174,14 @@ with brsr_tab:
               <div style="font-size:30px;">{sev_brsr.split()[0]}</div>
               <div>
                 <div style="font-size:16px;font-weight:700;color:{sev_color_brsr};">{sev_brsr} Operational Climate Risk · Score: {risk_score_brsr}/100</div>
-                <div style="font-size:13px;color:{C['slate']};margin-top:2px;">{len(flags)} flags · PD uplift: +{pd_adj*10000:.0f}bps · Readiness: {readiness_score:.0f}% · Water cost risk (5yr): ₹{w_cum_cost:.1f}Cr</div>
+                <div style="font-size:13px;color:{C['slate']};margin-top:2px;">{len(flags)} flags · risk overlay: +{pd_adj*10000:.0f}bps · Readiness: {readiness_score:.0f}% · Water cost risk (5yr): ₹{w_cum_cost:.1f}Cr</div>
               </div>
             </div>""",unsafe_allow_html=True)
 
             bm1,bm2,bm3,bm4,bm5=st.columns(5)
             bm1.metric("Risk Score",f"{risk_score_brsr}/100")
             bm2.metric("BRSR Readiness",f"{readiness_score:.0f}%")
-            bm3.metric("PD Uplift",f"+{pd_adj*10000:.0f} bps")
+            bm3.metric("Risk Overlay",f"+{pd_adj*10000:.0f} bps")
             bm4.metric("Water Cost Risk (5yr)",f"₹{w_cum_cost:.1f} Cr")
             bm5.metric("Energy Transition Risk",f"₹{energy_tr_risk:.1f} Cr")
 
@@ -3077,22 +3196,22 @@ with brsr_tab:
                 marker_color=[C["coral"],C["amber"],C["accent3"]],text=[f"{v:.2f}" for v in [s1_int,s2_int,s3_int]],textposition="outside"),row=1,col=2)
             fig_ghg.update_layout(**_chart_layout("",300)); _ax_style(fig_ghg,rows=1,cols=2)
             fig_ghg.update_yaxes(title="tCO₂e/₹Cr",row=1,col=1); fig_ghg.update_yaxes(title="tCO₂e/₹Cr",row=1,col=2)
-            st.plotly_chart(fig_ghg,width="stretch")
+            st.plotly_chart(fig_ghg,use_container_width=True)
             st.caption(f"Sector ({sector}): P25={ghg_bench['p25']}, P50={ghg_bench['p50']}, P75={ghg_bench['p75']} tCO₂e/₹Cr · Your intensity: **{ghg_int:.2f}** — {ghg_rank}")
 
-            # Chart 2: PD uplift tornado
+            # Chart 2: risk overlay tornado
             if flags:
-                st.subheader("🔗 BRSR Flags → PD Uplift")
+                st.subheader("🔗 BRSR Flags → Risk Overlay")
                 flag_bps={f:BRSR_PD_SPREAD.get(f,0)*10000 for f in flags}
                 fig_tor=go.Figure(go.Bar(x=list(flag_bps.values()),y=list(flag_bps.keys()),orientation="h",
                     marker_color=[C["coral"] if v>=25 else C["amber"] if v>=15 else C["mint"] for v in flag_bps.values()],
                     text=[f"+{v:.0f} bps" for v in flag_bps.values()],textposition="outside"))
-                fig_tor.update_layout(**_chart_layout(f"PD Uplift by BRSR Flag (Total: +{pd_adj*10000:.0f}bps)",max(220,len(flags)*45+80),
+                fig_tor.update_layout(**_chart_layout(f"Risk Overlay by BRSR Flag (Total: +{pd_adj*10000:.0f}bps)",max(220,len(flags)*45+80),
                     margin_override=dict(l=250,r=80,t=50,b=20)))
                 fig_tor.update_xaxes(title="Basis Point Uplift")
-                _ax_style(fig_tor); st.plotly_chart(fig_tor,width="stretch")
+                _ax_style(fig_tor); st.plotly_chart(fig_tor,use_container_width=True)
             else:
-                st.success("✅ No BRSR flags — no PD uplift from operational climate risk")
+                st.success("✅ No BRSR flags — no risk overlay from operational climate risk")
 
             # Chart 3: Readiness radar
             st.subheader("🎯 SEBI BRSR Core Regulatory Readiness")
@@ -3106,11 +3225,11 @@ with brsr_tab:
                     line=dict(color=C["mint"],width=1,dash="dot"),name="Full Compliance"))
                 fig_rad.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100]),bgcolor=C["bg_dark"]),
                     **_chart_layout("",360),showlegend=True)
-                st.plotly_chart(fig_rad,width="stretch")
+                st.plotly_chart(fig_rad,use_container_width=True)
             with rcol2:
                 st.dataframe(pd.DataFrame([{"Item":k,"Status":"✅" if v==1 else "⚠️" if v==0.5 else "❌"} for k,v in rdness_items.items()])
                     .style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-                    width="stretch",height=320,hide_index=True)
+                    use_container_width=True,height=320,hide_index=True)
 
             # Chart 4: Forward financial risk
             st.subheader("💰 5-Year Forward Operational Climate Cost")
@@ -3121,7 +3240,7 @@ with brsr_tab:
             fig_fwd.add_trace(go.Bar(x=yr5,y=wc_ann,name="Water Cost Escalation",marker_color=C["accent3"]))
             fig_fwd.add_trace(go.Bar(x=yr5,y=ec_ann,name="Energy Carbon Surcharge",marker_color=C["amber"]))
             fig_fwd.update_layout(**_chart_layout("Projected Annual Operational Climate Cost (₹ Cr)",280),barmode="stack")
-            _ax_style(fig_fwd); st.plotly_chart(fig_fwd,width="stretch")
+            _ax_style(fig_fwd); st.plotly_chart(fig_fwd,use_container_width=True)
 
             # Chart 5: Emissions trend
             if s1_y0>0 and r_y0>0:
@@ -3134,7 +3253,7 @@ with brsr_tab:
                     line=dict(color=C["accent2"],width=3),marker=dict(size=10,color=C["accent"]),name="Scope 1 Intensity"))
                 fig_tr.add_hline(y=ghg_bench["p50"],line_dash="dash",line_color=C["amber"],annotation_text=f"Sector P50 ({ghg_bench['p50']})",annotation_font_color=C["amber"])
                 fig_tr.update_layout(**_chart_layout(f"Scope 1 GHG Intensity Trend — {dir_t} (CAGR: {cagr*100:.1f}%/yr)",260))
-                _ax_style(fig_tr); st.plotly_chart(fig_tr,width="stretch")
+                _ax_style(fig_tr); st.plotly_chart(fig_tr,use_container_width=True)
 
             # Compliance table
             st.subheader("📋 BRSR Compliance Status")
@@ -3147,7 +3266,7 @@ with brsr_tab:
                 {"Indicator":"Regulatory Readiness","Value":f"{readiness_score:.0f}%","Threshold":"≥75%","Status":"🟢" if readiness_score>=75 else "🟡" if readiness_score>=50 else "🔴","Percentile":"Ready" if readiness_score>=75 else "Needs work"},
             ]
             st.dataframe(pd.DataFrame(crows).style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
-                width="stretch",hide_index=True)
+                use_container_width=True,hide_index=True)
 
             # Integration link to transition engine
             if st.session_state.get("transition_ran",False):
@@ -3157,9 +3276,9 @@ with brsr_tab:
                     cb_pk=df_tl["Carbon_Burden"].max(); pd_pk=df_tl["PD_Transition"].max()
                     ic1,ic2,ic3=st.columns(3)
                     ic1.metric("Base Transition PD",f"{pd_pk:.2%}")
-                    ic2.metric("BRSR PD Uplift",f"+{pd_adj*10000:.0f} bps")
-                    ic3.metric("Total PD (Transition × BRSR factor)",f"{min(pd_pk+pd_adj,PD_CAP):.2%}",delta=f"+{pd_adj*10000:.0f}bps",delta_color="inverse")
-                    st.caption("BRSR is treated as a bounded governance/readiness overlay for integrated PD to reduce double-counting with transition and physical risk channels. It captures water scarcity, energy dependence, governance deficiencies, and regulatory readiness risk.")
+                    ic2.metric("BRSR Governance Signal",f"+{pd_adj*10000:.0f} bps")
+                    ic3.metric("Total PD (Transition + BRSR)",f"{min(pd_pk+pd_adj,PD_CAP):.2%}",delta=f"+{pd_adj*10000:.0f}bps",delta_color="inverse")
+                    st.caption("BRSR overlay is additive operational climate risk premium. Captures risks outside carbon-price transmission chain: water scarcity, energy cost escalation, governance deficiencies, regulatory non-compliance penalties.")
 
             st.success("✅ BRSR Enhanced Diagnostics v1.2 completed")
             log_model_run("BRSR",{"company":company_name,"risk_score":risk_score_brsr,"pd_adj_bps":pd_adj*10000,"readiness":readiness_score})
@@ -3250,7 +3369,7 @@ with ai_tab:
                 pl["brsr"] = {
                     "kpis": bs.iloc[0].to_dict() if isinstance(bs, pd.DataFrame) and not bs.empty else {},
                     "active_flags": bf["Flag"].tolist() if isinstance(bf, pd.DataFrame) and "Flag" in bf.columns else [],
-                    "pd_uplift_bps": round(st.session_state.get("brsr_pd_adj", 0) * 10000, 1),
+                    "pd_overlay_bps": round(st.session_state.get("brsr_pd_adj", 0) * 10000, 1),
                     "readiness_score_pct": float(bs.iloc[0].get("Readiness_Score", 0)) if isinstance(bs, pd.DataFrame) and not bs.empty else 0,
                     "water_cost_risk_5yr_cr": float(bs.iloc[0].get("Water_Cost_Risk_Cr", 0)) if isinstance(bs, pd.DataFrame) and not bs.empty else 0,
                     "energy_transition_risk_cr": float(bs.iloc[0].get("Energy_TR_Risk_Cr", 0)) if isinstance(bs, pd.DataFrame) and not bs.empty else 0,
@@ -3268,145 +3387,6 @@ with ai_tab:
                     "unexpected_loss_cr": round(mc.get("ECL_95", 0) - mc.get("Mean_ECL", 0), 2),
                 }
             return pl
-
-        def _safe_float(v, default=0.0):
-            try:
-                if pd.isna(v):
-                    return default
-                return float(v)
-            except Exception:
-                return default
-
-        def _compact_payload_for_ai(pl):
-            """Create a small, advisor-ready data packet to stay below Groq TPM limits."""
-            fin = pl.get("financials", {})
-            out = {
-                "company": pl.get("company"),
-                "sector": pl.get("sector"),
-                "year": pl.get("reporting_year"),
-                "baseline_scenario": pl.get("baseline_scenario"),
-                "financials": {
-                    "revenue_cr": fin.get("revenue_cr"),
-                    "ebitda_margin_pct": fin.get("ebitda_margin_pct"),
-                    "interest_cr": fin.get("interest_cr"),
-                    "ead_cr": fin.get("ead_cr"),
-                    "base_pd_pct": fin.get("base_pd_pct"),
-                    "base_lgd_pct": fin.get("base_lgd_pct"),
-                    "total_emissions_tco2e": fin.get("total_emissions_tco2e"),
-                    "high_carbon_assets_cr": fin.get("high_carbon_assets_cr"),
-                },
-            }
-
-            tr = pl.get("transition_risk", {})
-            if tr:
-                scen = tr.get("scenario_summary", {})
-                worst_path = tr.get("worst_scenario_year_by_year", []) or []
-                key_years = []
-                if worst_path:
-                    key_years = [worst_path[0]]
-                    if len(worst_path) > 2:
-                        key_years.append(worst_path[len(worst_path)//2])
-                    if len(worst_path) > 1:
-                        key_years.append(worst_path[-1])
-                out["transition"] = {
-                    "worst_scenario": tr.get("worst_scenario"),
-                    "scenario_summary": scen,
-                    "key_years_only": key_years,
-                    "planned_capex_cr": tr.get("planned_capex_cr"),
-                    "abatement_cost_inr_per_tco2": tr.get("abatement_cost_inr_per_tco2"),
-                    "abatement_potential_pct": tr.get("abatement_potential_pct"),
-                    "governance_score": tr.get("governance_score"),
-                }
-
-            pr = pl.get("physical_risk", {})
-            if pr:
-                out["physical"] = {
-                    "summary": pr.get("summary", {}),
-                    "asset_count": pr.get("asset_count", 0),
-                    "top_risk_assets": (pr.get("top_risk_assets", []) or [])[:2],
-                    "ngfs_peak_rev_loss_p50": pr.get("ngfs_peak_rev_loss_p50", 0),
-                }
-
-            br = pl.get("brsr", {})
-            if br:
-                out["brsr"] = {
-                    "pd_uplift_bps": br.get("pd_uplift_bps", 0),
-                    "readiness_score_pct": br.get("readiness_score_pct", 0),
-                    "active_flags": (br.get("active_flags", []) or [])[:6],
-                    "water_cost_risk_5yr_cr": br.get("water_cost_risk_5yr_cr", 0),
-                    "energy_transition_risk_cr": br.get("energy_transition_risk_cr", 0),
-                    "kpis": br.get("kpis", {}),
-                }
-
-            integ = pl.get("integrated_risk", [])
-            if integ:
-                out["integrated"] = integ[:9]
-            if pl.get("monte_carlo"):
-                out["monte_carlo"] = pl.get("monte_carlo")
-            if pl.get("additional_context"):
-                out["additional_context"] = str(pl.get("additional_context"))[:900]
-            if pl.get("specific_focus"):
-                out["specific_focus"] = str(pl.get("specific_focus"))[:350]
-            return out
-
-        def _json_compact(obj, max_chars=5200):
-            txt = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
-            if len(txt) > max_chars:
-                return txt[:max_chars] + "...[TRUNCATED_TO_FIT_GROQ_LIMIT]"
-            return txt
-
-        def _optimized_system_prompt(advisor_name, original_system):
-            """Shorter prompts for high-value advisors to reduce tokens and improve consistency."""
-            common = (
-                "Use only the data provided. Be concise, numerical, India-focused, and action-oriented. "
-                "Do not invent exact data; when estimating, label it as an estimate. "
-                "Keep output under 900 words. Use markdown tables where useful."
-            )
-            if "CFO Action Advisor" in advisor_name:
-                return common + """
-ROLE: CFO climate-finance advisor for Indian corporates.
-OUTPUT:
-1) CFO priorities table with exactly 3 rows: Action, ₹ cost/funding, timeline, metric impact (PD/ECL/DSCR), risk if not done.
-2) Financing plan: green bonds, ESG-linked loan, REC/carbon benefits, SIDBI/IFC/ADB options; include estimated ticket/rate ranges.
-3) 90-day execution checklist.
-4) What NOT to do: 3 mistakes.
-Be specific and use the company's actual risk metrics."""
-            if "Operations & Engineering Advisor" in advisor_name:
-                return common + """
-ROLE: Operations and decarbonisation engineering advisor for Indian heavy industry.
-OUTPUT:
-1) Operational root cause in 2 bullets.
-2) Quick wins table: 3-4 actions, ₹ cost, annual saving, tCO₂e impact, payback, Indian vendor examples.
-3) Medium-term CAPEX table: 2-3 projects, priority, cost, timeline, effect on carbon burden/DSCR/PD.
-4) Year-1 implementation sequence by quarter.
-Keep recommendations practical for the stated sector."""
-            if "Strategic Planning Advisor" in advisor_name:
-                return common + """
-ROLE: Strategy advisor building a climate-resilient 5-year roadmap.
-OUTPUT:
-1) Strategic verdict in 3 sentences.
-2) 5-year roadmap table: Year, investment decision, business-model move, metric target, milestone.
-3) Competitive dynamics: who wins/loses and why.
-4) 2 hidden opportunities with revenue logic.
-5) 3 strategic risks to avoid.
-Tie every recommendation to PD, DSCR, ECL, carbon burden, CAPEX gap or BRSR flags."""
-            return common + "\n" + original_system[:1800]
-
-        def _build_ai_messages(advisor_name, adv, payload):
-            compact_payload = _compact_payload_for_ai(payload)
-            data_brief = _json_compact(compact_payload, max_chars=5200)
-            focus = compact_payload.get("specific_focus") or "Use the most material risks in the data."
-            user_msg = (
-                f"TASK: {adv['user_prefix']}\n"
-                f"COMPANY: {company_name} | SECTOR: {sector} | YEAR: {REPORTING_YEAR}\n"
-                f"FOCUS: {focus}\n"
-                "METHOD: First silently identify the 3 most material risks from the data, then write the final answer only.\n"
-                f"COMPACT_DATA_JSON:\n{data_brief}"
-            )
-            return [
-                {"role": "system", "content": _optimized_system_prompt(advisor_name, adv["system"])},
-                {"role": "user", "content": user_msg},
-            ]
 
         # ── Advisor definitions ─────────────────────────────────────────
         ADVISORS = {
@@ -3563,7 +3543,7 @@ Be specific: "A PD of X% puts this borrower in the [internal rating category] of
 ## 📉 Credit Actions the Bank Is Likely to Take (Next 12–24 Months)
 For each likely action: the trigger, the timeline, the financial impact on the company.
 - Covenant review / tightening
-- Margin uplift (specify basis points range)
+- Margin overlay (specify basis points range)
 - Limit reduction or non-renewal
 - Enhanced monitoring / watch list
 - Requirement for BRSR/climate disclosures
@@ -3725,10 +3705,10 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
             run_btn = st.button(
                 f"🧠 Ask the {adv['icon']} {selected_advisor.split(' ', 1)[1]}",
                 type="primary",
-                width="stretch",
+                use_container_width=True,
             )
         with col_btn2:
-            clear_btn = st.button("🗑️ Clear Output", width="stretch")
+            clear_btn = st.button("🗑️ Clear Output", use_container_width=True)
 
         if clear_btn:
             if "ai_outputs" in st.session_state:
@@ -3747,37 +3727,33 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
             if focus:
                 payload["specific_focus"] = focus
 
-            messages = _build_ai_messages(selected_advisor, adv, payload)
+            user_msg = (
+                f"{adv['user_prefix']}\n\n"
+                f"COMPANY: {company_name} | SECTOR: {sector} | YEAR: {REPORTING_YEAR}\n\n"
+                f"DATA:\n{json.dumps(payload, indent=2, default=str)}"
+            )
+            if focus:
+                user_msg += f"\n\nSPECIFIC FOCUS: {focus}"
 
-            with st.spinner(f"Your {selected_advisor} is analysing the compact risk brief..."):
+            with st.spinner(f"Your {selected_advisor} is analysing the data..."):
                 try:
                     client = _get_groq_client()
-                    stream = client.chat.completions.create(
+                    resp = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
-                        messages=messages,
-                        temperature=0.25,
-                        max_tokens=900,
-                        stream=True,
+                        messages=[
+                            {"role": "system", "content": adv["system"]},
+                            {"role": "user",   "content": user_msg},
+                        ],
+                        temperature=0.30,
+                        max_tokens=3000,
                     )
-                    output_parts = []
-                    stream_box = st.empty()
-                    for chunk in stream:
-                        delta = getattr(chunk.choices[0].delta, "content", None)
-                        if delta:
-                            output_parts.append(delta)
-                            stream_box.markdown("".join(output_parts))
-
-                    output = "".join(output_parts).strip()
+                    output = resp.choices[0].message.content
                     if "ai_outputs" not in st.session_state:
                         st.session_state["ai_outputs"] = {}
                     st.session_state["ai_outputs"][selected_advisor] = output
                     st.session_state["ai_outputs"]["_last_advisor"] = selected_advisor
                 except Exception as e:
-                    err = str(e)
-                    if "413" in err or "Request too large" in err or "tokens" in err:
-                        st.error("AI error: Groq token limit exceeded even after compression. Reduce optional context/focus text and retry, or use a higher Groq tier/model.")
-                    else:
-                        st.error(f"AI error: {e}. Check that GROQ_API_KEY is set in Streamlit Secrets or your environment.")
+                    st.error(f"AI error: {e}. Check that GROQ_API_KEY is set in Streamlit Secrets or your environment.")
 
         # ── Display output ──────────────────────────────────────────────
         ai_outs = st.session_state.get("ai_outputs", {})
@@ -3800,7 +3776,7 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
                 data=output_text,
                 file_name=f"ICCRE_{company_name.replace(' ','_')}_{selected_advisor.split(' ',1)[1].replace(' ','_')[:30]}_{REPORTING_YEAR}.txt",
                 mime="text/plain",
-                width="content",
+                use_container_width=False,
             )
 
         elif not run_btn:
@@ -3840,199 +3816,63 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
     # TAB 8 — METHODOLOGY  (auditor-appropriate, IP-protected)
     # ============================================================
 with methodology_tab:
-    st.markdown(f"<h2 style='color:{C['white']}'>📖 Model Methodology</h2>", unsafe_allow_html=True)
-    st.caption(f"ICCRE v{MODEL_VERSION} · {ENGINE_BUILD} · Build {MODEL_BUILD_DATE} · {NGFS_DATA_VERSION}")
+    st.markdown(f"<h2 style='color:{C['white']}'>📖 Methodology Overview</h2>", unsafe_allow_html=True)
+    st.caption(f"ICCRE v{MODEL_VERSION} · Public methodology summary · {NGFS_DATA_VERSION}")
 
     st.info(
-        "This section documents the model framework, key equations, regulatory alignment, "
-        "and known limitations for disclosure to model validators, auditors, and regulators. "
-        "Proprietary calibration data, sector-specific coefficients, and implementation details "
-        "are available under NDA on request."
+        "This public view explains what the tool does without disclosing proprietary equations, "
+        "coefficient values, or implementation details. Internal model documentation can be enabled "
+        "only through protected internal mode."
     )
 
-    with st.expander("📐 Model Purpose & Scope", expanded=True):
+    scope_badge("single", "Reporting-year snapshot results use the selected company/asset inputs for the reporting year.")
+    st.markdown("""
+    **Reporting-year outputs include:** revenue loss, EBITDA impact, post-risk DSCR, physical-risk PD,
+    BRSR readiness, operational risk score, and current-year ΔECL.
+    """)
+
+    scope_badge("multi", "Scenario results are forward-looking NGFS pathway projections across all selected years.")
+    st.markdown("""
+    **Multi-year outputs include:** transition PD trajectory, ECL trajectory, carbon burden trend,
+    DSCR stress trajectory, stranded-asset trend, CAPEX gap, scenario-weighted ECL, and stress charts.
+    """)
+
+    with st.expander("What the model combines", expanded=True):
         st.markdown("""
-        **Purpose:** Quantify the financial impact of climate change on corporate credit risk under
-        forward-looking scenarios aligned with the Network for Greening the Financial System (NGFS).
-
-        **Primary outputs:** Probability of Default (PD), Loss Given Default (LGD), Expected Credit
-        Loss (ECL), Debt Service Coverage Ratio (DSCR), and capital adequacy metrics under three
-        NGFS climate scenarios.
-
-        **Regulatory frameworks:** ISSB IFRS S2 (§14–16), RBI Climate Risk Management Guidelines,
-        SEBI BRSR Core, Basel III capital adequacy, ICAAP.
-
-        **Covered sectors:** Steel · Power · Cement · Oil & Gas · Manufacturing
-
-        **Scenario coverage:** Current Policies (≈2.7°C) · NDCs (≈2.1°C) · Net Zero 2050 (≈1.5°C)
-
-        **Data vintage:** NGFS Phase III (2023). Short-term (2025–2030) scenarios available in Phase V.
+        - **Transition risk:** links climate scenarios to financial stress indicators.
+        - **Physical risk:** estimates asset-level exposure to flood, heat, and cyclone hazards.
+        - **BRSR diagnostics:** converts disclosure and operational readiness into a bounded governance overlay.
+        - **Integrated view:** combines risk channels into decision-support metrics for credit, treasury, and board review.
         """)
 
-    with st.expander("🔗 Climate-to-Credit Transmission Chain"):
+    with st.expander("How to interpret results", expanded=False):
         st.markdown("""
-        The model follows a five-stage financial transmission chain:
-
-        **Stage 1 — Climate Scenario:** NGFS carbon price, GDP, and temperature pathways are
-        extracted for the selected scenario and projection year.
-
-        **Stage 2 — Revenue Impact:** Carbon costs and GDP shocks are transmitted to company
-        revenue through three independent channels: GDP macro sensitivity, demand elasticity
-        (volume reduction), and price elasticity (margin compression). A chronic physical
-        temperature effect also reduces revenue proportionally to warming above baseline.
-
-        **Stage 3 — EBITDA & DSCR:** Net carbon cost is deducted from EBITDA. A governance
-        quality adjustment reflects the management quality of the transition response.
-        A climate credit spread shock is applied to interest costs. DSCR is computed on the
-        stressed EBITDA and stressed interest.
-
-        **Stage 4 — Credit Model:** A structural logit PD model maps DSCR stress and carbon
-        burden directly to change in default probability. The model is derived from Merton's
-        structural credit framework adapted for climate-specific risk factors.
-
-        **Stage 5 — Integration & ECL:** Transition and physical PDs are combined using a
-        Gaussian copula accounting for cross-risk correlation. BRSR operational flags apply a bounded governance/readiness multiplier. Final simplified ECL = PD × LGD × EAD; scenario-weighted ECL is also shown for decision support.
+        - **Snapshot cards** answer: *What is the impact for the selected reporting year?*
+        - **Scenario charts** answer: *How could risk evolve over time under different climate pathways?*
+        - **Peak values** are stress indicators.
+        - **Weighted values** are management-weighted scenario summaries.
+        - Outputs are designed for decision support and require user review before regulated credit decisions.
         """)
 
-    with st.expander("📐 Core Credit Model Equations"):
-        st.latex(r"\text{logit}(PD_t) = \text{logit}(PD_0)"
-                 r"+ \alpha_{DSCR}\cdot\underbrace{(1.5 - DSCR_t)}_{\text{signed gap}}"
-                 r"+ \beta_{credit}\cdot CB_t")
-        st.latex(r"PD_t = \sigma\bigl(\text{logit}(PD_t)\bigr), \quad PD_t \in [PD_{floor},\, PD_{cap}]")
-        st.markdown("""
-        Where:
-        - **α_DSCR** — sector-specific DSCR sensitivity parameter
-        - **DSCR gap** — signed deviation from 1.5× covenant threshold (positive = stress, negative = relief)
-        - **β_credit** — sector-specific carbon burden sensitivity parameter
-        - **CB_t** — carbon burden (net carbon cost / revenue) at time t
-        - **PD_floor = 0.05%**, **PD_cap = 35%** (regulatory prudence bounds)
-
-        The signed DSCR gap allows credit quality *improvement* for companies with DSCR > 1.5×,
-        consistent with structural credit theory (Merton, 1974).
-        """)
-
-    with st.expander("🌡️ Physical Risk Damage Function (v1.2)"):
-        st.latex(r"\text{Damage Multiplier} = 1 + 0.20 \cdot \Delta T + 0.04 \cdot \Delta T^2")
-        st.latex(r"\sigma_{\Delta T} = 0.08 \cdot \Delta T")
-        st.latex(r"P_{10} = \text{mult} - 1.645\,\sigma, \quad P_{90} = \text{mult} + 1.645\,\sigma")
-        st.markdown("""
-        The quadratic damage function is calibrated to economic damage literature consistent
-        climate damage literature but is not presented as an official IPCC formula. The linear term (0.20) captures proportional temperature-income
-        effects; the quadratic term (0.04) captures accelerating damages at higher warming levels.
-        Temperature anomaly ΔT is extracted from the same NGFS scenario pathway used by the
-        transition engine, ensuring scenario consistency.
-
-        Uncertainty bounds (P10–P90) grow with temperature anomaly, reflecting the greater
-        model uncertainty at higher warming levels.
-        """)
-
-    with st.expander("🔀 Gaussian Copula Integration"):
-        st.latex(r"PD_{copula} = \Phi_2\!\left(\Phi^{-1}(PD_T),\;\Phi^{-1}(PD_P),\;\rho\right)")
-        st.latex(r"PD_{integrated} = \min\!\left(PD_{copula} \times M_{BRSR},\; PD_{cap}\right)")
-        st.markdown("""
-        The bivariate Gaussian copula captures the statistical dependence between transition risk
-        and physical risk without assuming they are independent or perfectly correlated.
-        Sector-specific correlations ρ range from 0.25 (Manufacturing) to 0.40 (Oil & Gas),
-        reflecting the degree to which carbon-intensive sectors face both types of climate risk
-        simultaneously.
-
-        BRSR operational risk is treated as a bounded governance/readiness multiplier rather than a direct additive PD block. This reduces double-counting because weak BRSR readiness can overlap with transition preparedness, physical resilience, and management quality. The multiplier is transparently capped at +20% relative PD impact.
-        """)
-
-    with st.expander("📘 BRSR → Credit Risk Linkage"):
-        st.markdown("""
-        BRSR Core operational flags are mapped to a governance/readiness overlay that represents incremental credit risk from operational climate exposures. This linkage captures risks
-        outside the carbon-price transmission chain, including:
-
-        - Water scarcity exposure in high-stress regions
-        - Energy cost escalation from high fossil energy dependence
-        - Governance deficiencies that reduce management quality of climate transition
-        - Regulatory non-compliance risk under SEBI BRSR Core requirements
-
-        The overlay is conservative and transparent: each flag is treated independently, the raw score is capped, and integrated PD uses a bounded multiplier to avoid double-counting.
-        """)
-
-    with st.expander("🔄 v1.1 → v1.2 Model Corrections"):
-        st.markdown("""
-        Seven corrections were applied in v1.1. All are preserved in v1.2.
-
-        | Fix | Nature | Financial Impact |
-        |-----|--------|-----------------|
-        | FIX-01 | β_carbon transition/credit separation | Prevents slider from overriding structural model |
-        | FIX-02 | Physical double-count removed | Reduces PD over-estimation in high-warming scenarios |
-        | FIX-03 | Revenue denominator stabilised | Removes order-of-operations sensitivity |
-        | FIX-04 | Signed DSCR gap | Credit relief for strong companies (DSCR > 1.5×) |
-        | FIX-05 | Two-step CPI conversion | Material for high-carbon-price scenarios |
-        | FIX-06 | GDP single transmission path | Removes systematic over-estimation in disorderly transition |
-        | FIX-07 | MC GDP sign consistency | MC outputs now match deterministic results |
-        """)
-
-
-    with st.expander("🧪 Zero-Cost Market-Readiness Upgrades in v1.3"):
+    with st.expander("Governance note", expanded=False):
         st.markdown(f"""
-        v1.3 improves reliability without paid data dependencies:
+        **Model use:** {MODEL_USE_NOTE}
 
-        - BRSR now enters integrated PD as a **bounded governance/readiness multiplier**, not a direct additive PD block.
-        - Integrated reporting now includes **scenario-weighted ECL** using transparent management weights: `{SCENARIO_WEIGHTS}`.
-        - Physical damage wording is corrected to **illustrative non-linear multiplier**, avoiding unsupported claims of an official IPCC formula.
-        - Exports and methodology now state the model-use limitation clearly: `{MODEL_USE_NOTE}`
-        - Model confidence is labelled based on whether calibration and validation evidence exists in the session.
+        **Confidence:** {MODEL_CONFIDENCE_DEFAULT}
 
-        These upgrades improve auditability and market readiness while keeping the tool free to operate.
+        Sector assumptions are versioned and can be overridden using client-provided calibration files.
+        The public application intentionally hides proprietary model equations and internal coefficients.
         """)
 
-    with st.expander("⚠️ Model Limitations & Assumptions"):
-        st.markdown("""
-        The following limitations apply and should be disclosed in any regulatory submission or client demo:
+    if INTERNAL_MODE:
+        st.warning("Internal mode is enabled. Do not expose this view in public demos.")
+        st.json({
+            "model_version": MODEL_VERSION,
+            "parameter_version": PARAMETER_VERSION,
+            "sector_registry_loaded": list(_SECTOR_REG.keys()),
+            "parameter_bounds": PARAMETER_BOUNDS,
+        })
 
-        1. **Calibration:** Sector parameters are calibrated to published literature. Borrower-specific
-           historical default data has not been used unless the Calibration tab has been run with
-           uploaded observed PD data.
-
-        2. **Scope:** Five sectors are covered. Real estate, agriculture, infrastructure, and NBFC
-           are not currently modelled.
-
-        3. **Scenario horizon:** NGFS Phase III long-term scenarios are used. Short-term (2025–2030)
-           horizon analysis requires Phase V data (available separately).
-
-        4. **Static balance sheet:** The model does not account for dynamic feedback between climate
-           stress, asset values, and new lending capacity over multi-year horizons.
-
-        5. **Governance coefficient:** The 15% EBITDA governance sensitivity is expert-calibrated.
-           Users should adjust via the governance sliders based on company-specific evidence.
-
-        6. **Physical hazard data:** Results depend on the quality and resolution of GIS input data.
-           Results should be treated as indicative for assets with limited local hazard data.
-
-        7. **BRSR coefficients:** BRSR-to-PD spread linkages are analytically derived, not
-           backtested against observed defaults. They represent regulatory risk premia, not
-           historically observed credit loss differentials.
-        """)
-
-    with st.expander("📋 Scenario Registry"):
-        st.dataframe(
-            pd.DataFrame(SCENARIO_REGISTRY).T
-            .style.set_properties(**{"background-color": C["bg_dark"], "color": C["text"]}),
-            width="stretch"
-        )
-
-    with st.expander("🔢 Model Governance Record"):
-        gov_df = pd.DataFrame([{
-            "Parameter": "Model Version",       "Value": MODEL_VERSION},
-            {"Parameter": "Parameter Version",  "Value": PARAMETER_VERSION},
-            {"Parameter": "NGFS Data Version",  "Value": NGFS_DATA_VERSION},
-            {"Parameter": "Engine Name",         "Value": ENGINE_BUILD},
-            {"Parameter": "Build Date",          "Value": MODEL_BUILD_DATE},
-            {"Parameter": "Run Log Location",    "Value": "logs/run_log.csv"},
-            {"Parameter": "Audit Trail",         "Value": "SHA-256 run hash per execution"},
-            {"Parameter": "Regulatory Basis",    "Value": "ISSB S2 · RBI 2024 Draft · SEBI BRSR Core · NGFS PIII"},
-        ])
-        st.dataframe(gov_df.style.set_properties(**{"background-color": C["bg_dark"], "color": C["text"]}),
-            width="stretch", hide_index=True)
-
-# ============================================================
-# TAB 9 — VALIDATION  (improved)
-# ============================================================
 with validation_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>🔬 Model Validation</h2>", unsafe_allow_html=True)
     st.caption("Backtest model-implied PD against observed default rates · Bias detection · Error diagnostics")
@@ -4151,7 +3991,7 @@ with validation_tab:
             fig_v1.update_yaxes(tickformat=".1%", row=1, col=1)
             fig_v1.update_yaxes(ticksuffix=" pp", title="Error (percentage points)", row=1, col=2)
             _ax_style(fig_v1, rows=1, cols=2)
-            st.plotly_chart(fig_v1, width="stretch")
+            st.plotly_chart(fig_v1, use_container_width=True)
 
             # Scatter: predicted vs actual
             fig_v2 = go.Figure()
@@ -4172,7 +4012,7 @@ with validation_tab:
             fig_v2.update_xaxes(title="Observed PD", tickformat=".1%")
             fig_v2.update_yaxes(title="Model PD", tickformat=".1%")
             _ax_style(fig_v2)
-            st.plotly_chart(fig_v2, width="stretch")
+            st.plotly_chart(fig_v2, use_container_width=True)
 
             # Full comparison table
             st.subheader("📋 Year-by-Year Validation Table")
@@ -4186,7 +4026,7 @@ with validation_tab:
                     .applymap(lambda v: f"color:{C['coral']}" if isinstance(v,float) and v>0.005
                               else f"color:{C['mint']}" if isinstance(v,float) and v<-0.005 else "",
                               subset=["Error"]),
-                width="stretch", hide_index=True
+                use_container_width=True, hide_index=True
             )
 
             # ECL validation if provided
@@ -4224,6 +4064,14 @@ with validation_tab:
 with calibration_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>⚙️ Parameter Calibration</h2>", unsafe_allow_html=True)
     st.caption("Optimise α (DSCR sensitivity) and β_credit (carbon burden sensitivity) to minimise error against observed default rates")
+
+    if PUBLIC_MODE:
+        st.info(
+            "Advanced calibration is hidden in public mode to protect proprietary parameter logic. "
+            "Use protected internal mode for model-development workflows."
+        )
+        st.stop()
+
 
     if not st.session_state.get("transition_ran", False):
         st.info("Run Transition Risk Engine first.")
@@ -4346,7 +4194,7 @@ with calibration_tab:
             fig_grid.update_layout(**_chart_layout("RMSE (%) by α × β_credit — lower is better", 380,
                 legend_override=dict(orientation="h", y=1.05)))
             fig_grid.update_xaxes(title="β_credit"); fig_grid.update_yaxes(title="α (DSCR sensitivity)")
-            st.plotly_chart(fig_grid, width="stretch")
+            st.plotly_chart(fig_grid, use_container_width=True)
 
             # Calibrated vs uncalibrated PD comparison
             dg_cal = np.clip(1.5 - df_cc["DSCR"], -4.0, 6.0)
@@ -4366,7 +4214,7 @@ with calibration_tab:
             fig_cal.update_layout(**_chart_layout("Calibrated vs Original Model vs Observed PD", 300))
             fig_cal.update_yaxes(tickformat=".1%")
             _ax_style(fig_cal)
-            st.plotly_chart(fig_cal, width="stretch")
+            st.plotly_chart(fig_cal, use_container_width=True)
 
             # Action guidance
             st.subheader("📌 Recommended Actions")
@@ -4540,7 +4388,7 @@ with access_tab:
     )
 
     # Build mailto link
-    if st.button("📨 Send Request", type="primary", width="content"):
+    if st.button("📨 Send Request", type="primary", use_container_width=False):
         if not req_name or not req_email or not req_org or req_role == "— Select —":
             st.error("Please fill in Name, Email, Organisation, and Role before submitting.")
         else:
