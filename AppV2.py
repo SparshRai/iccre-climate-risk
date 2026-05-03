@@ -13,6 +13,8 @@ PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-ready · INR-denomina
 CONTACT_EMAIL    = "hello@iccre.in"
 PRODUCT_URL      = "https://iccre.in"
 LINKEDIN_URL     = "https://linkedin.com/company/iccre"
+MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
+MODEL_CONFIDENCE_DEFAULT = "Medium — assumption-led, scenario-consistent, not borrower-calibrated"
 
 # ── Demo dataset: Bharat Steel Industries Ltd (fictional) ──
 # Pre-configured to produce visually compelling, realistic demo output.
@@ -98,6 +100,7 @@ import numpy as np
 import os, json
 import urllib.request
 from groq import Groq
+from math import radians, sin, cos, asin, sqrt
 
 # Rasterio is required only for the Physical Risk flood layer.
 # Keeping this import guarded prevents the full app from failing during deployment
