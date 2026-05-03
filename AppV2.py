@@ -108,10 +108,12 @@ from math import radians, sin, cos, asin, sqrt
 try:
     import rasterio
     from rasterio.transform import rowcol
+    from rasterio.windows import Window
     RASTERIO_IMPORT_ERROR = None
 except Exception as _rasterio_error:
     rasterio = None
     rowcol = None
+    Window = None
     RASTERIO_IMPORT_ERROR = str(_rasterio_error)
 
 import folium
@@ -204,9 +206,8 @@ def _ensure_gis_files():
                 failed.append(f"{local_path}: {e}")
     return failed
 
-_gis_missing = _ensure_gis_files()
-if _gis_missing:
-    st.sidebar.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
+# GIS files are intentionally NOT loaded at app startup.
+# They are loaded only inside the Physical Risk module to avoid Streamlit Cloud health-check crashes.
 if RASTERIO_IMPORT_ERROR:
     st.sidebar.warning("⚠️ Rasterio failed to import. Flood layer will be disabled, but other modules can still run.")
 # ============================================================
@@ -2052,6 +2053,11 @@ with physical_tab:
     if not st.session_state.get("enable_physical",False):
         st.info("Enable **Physical Risk** in the sidebar.")
     else:
+        # Load GIS files only when the Physical Risk module is actually used.
+        _gis_missing = _ensure_gis_files()
+        if _gis_missing:
+            st.warning("⚠️ Some GIS files failed to load. Physical Risk will continue with available layers only.")
+
         # Public mode: detailed physical methodology notes hidden.
         scope_badge("single", f"Physical KPI cards use the selected reporting year: {REPORTING_YEAR}")
 
@@ -2091,17 +2097,32 @@ with physical_tab:
 
             with st.spinner("Extracting hazard data..."):
                 # Flood
+                # Memory-safe raster access: read only a small window around each asset.
+                # This avoids loading the entire GeoTIFF into memory on Streamlit Cloud.
                 flood_vals=[]
                 try:
+                    if rasterio is None or rowcol is None or Window is None:
+                        raise RuntimeError(RASTERIO_IMPORT_ERROR or "rasterio unavailable")
                     with rasterio.open(r"Data/floodMapGL_rp100y.tif") as src:
-                        arr=src.read(1); pk=abs(src.res[0])*111; bp=int(5/pk)
+                        pk=max(abs(src.res[0])*111, 1e-6)
+                        bp=max(1, int(5/pk))
                         for _,a in df.iterrows():
                             try:
                                 ri,ci=rowcol(src.transform,a["longitude"],a["latitude"])
-                                w=arr[max(0,ri-bp):min(arr.shape[0],ri+bp),max(0,ci-bp):min(arr.shape[1],ci+bp)]
-                                v=w[(w>0)&(w<100)]; flood_vals.append(float(v.max()) if v.size else 0.0)
-                            except: flood_vals.append(0.0)
-                except: flood_vals=[0.0]*len(df)
+                                r0=max(0,ri-bp); r1=min(src.height,ri+bp)
+                                c0=max(0,ci-bp); c1=min(src.width,ci+bp)
+                                if r1<=r0 or c1<=c0:
+                                    flood_vals.append(0.0); continue
+                                win=Window(c0,r0,c1-c0,r1-r0)
+                                w=src.read(1, window=win, masked=True)
+                                v=w.compressed() if hasattr(w, "compressed") else w.ravel()
+                                v=v[(v>0)&(v<100)]
+                                flood_vals.append(float(v.max()) if v.size else 0.0)
+                            except Exception:
+                                flood_vals.append(0.0)
+                except Exception as e:
+                    st.warning(f"Flood layer skipped: {e}")
+                    flood_vals=[0.0]*len(df)
                 df["flood_depth_m"]=flood_vals
 
                 # Heat
@@ -2109,7 +2130,8 @@ with physical_tab:
                     heat=pd.read_csv(r"Data/era5_test_day_grid.csv")
                     heat["exceed"]=(heat["temp_c"]>=35).astype(int)
                     hg=heat.groupby(["lat","lon"],as_index=False)["exceed"].sum()
-                except: hg=pd.DataFrame(columns=["lat","lon","exceed"])
+                except Exception:
+                    hg=pd.DataFrame(columns=["lat","lon","exceed"])
                 def nearest_heat(row):
                     if hg.empty: return 0
                     idx=((hg["lat"]-row["latitude"])**2+(hg["lon"]-row["longitude"])**2).idxmin()
@@ -2118,14 +2140,31 @@ with physical_tab:
 
                 # Cyclone
                 try:
-                    cyc=pd.read_csv(r"Data/ibtracs.NI.list.v04r01.csv")[["LAT","LON","USA_WIND"]]
+                    cyc=pd.read_csv(
+                        r"Data/ibtracs.NI.list.v04r01.csv",
+                        usecols=["LAT","LON","USA_WIND"],
+                        low_memory=False
+                    )
                     cyc=cyc.apply(pd.to_numeric,errors="coerce").dropna()
                     cyc["wind_kmh"]=cyc["USA_WIND"]*1.852
-                except: cyc=pd.DataFrame(columns=["LAT","LON","wind_kmh"])
+                except Exception as e:
+                    st.warning(f"Cyclone layer skipped: {e}")
+                    cyc=pd.DataFrame(columns=["LAT","LON","wind_kmh"])
                 def max_wind(a):
-                    if cyc.empty: return 0.0
-                    dists=cyc.apply(lambda r: haversine(a["latitude"],a["longitude"],r["LAT"],r["LON"]),axis=1)
-                    nb=cyc.loc[dists<=100,"wind_kmh"]; return float(nb.max()) if len(nb)>0 else 0.0
+                    if cyc.empty:
+                        return 0.0
+                    try:
+                        lat1=np.radians(float(a["latitude"]))
+                        lon1=np.radians(float(a["longitude"]))
+                        lat2=np.radians(cyc["LAT"].astype(float).to_numpy())
+                        lon2=np.radians(cyc["LON"].astype(float).to_numpy())
+                        dlat=lat2-lat1; dlon=lon2-lon1
+                        h=np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
+                        d=6371*2*np.arcsin(np.sqrt(h))
+                        vals=cyc.loc[d<=100,"wind_kmh"]
+                        return float(vals.max()) if len(vals)>0 else 0.0
+                    except Exception:
+                        return 0.0
                 df["max_wind_kmh"]=df.apply(max_wind,axis=1)
 
                 df["H_flood"]=df["flood_depth_m"].apply(flood_damage)
@@ -3016,7 +3055,7 @@ with plots_tab:
                         color=clr, fill=True, fill_opacity=0.78,
                         popup=f"<b>{r['asset_id']}</b><br>Risk: {v:.2f}<br>Rev Loss: ₹{r['revenue_loss']:.1f}Cr"
                     ).add_to(m)
-                st_folium(m, use_container_width=True, height=400)
+                st_folium(m, width=1200, height=400)
 
         # ── SECTION 5: INTEGRATED RISK SUMMARY CHART ──────────────────
         if st.session_state.get("integrated_ran", False):
