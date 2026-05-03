@@ -96,10 +96,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os, json
+import urllib.request
 from groq import Groq
-import rasterio
-from rasterio.transform import rowcol
-from math import radians, sin, cos, asin, sqrt
+
+# Rasterio is required only for the Physical Risk flood layer.
+# Keeping this import guarded prevents the full app from failing during deployment
+# if native geospatial wheels are temporarily unavailable.
+try:
+    import rasterio
+    from rasterio.transform import rowcol
+    RASTERIO_IMPORT_ERROR = None
+except Exception as _rasterio_error:
+    rasterio = None
+    rowcol = None
+    RASTERIO_IMPORT_ERROR = str(_rasterio_error)
+
 import folium
 from streamlit_folium import st_folium
 from scipy.stats import norm, multivariate_normal
@@ -112,13 +123,50 @@ from plotly.subplots import make_subplots
 
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
+
+# ============================================================
+# PAGE CONFIG — must be the first Streamlit UI command
+# ============================================================
+st.set_page_config(
+    page_title="ICCRE — India Climate Credit Risk Engine",
+    page_icon="🌍",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        "Get Help": f"mailto:{CONTACT_EMAIL}",
+        "Report a bug": f"mailto:{CONTACT_EMAIL}?subject=Bug Report",
+        "About": (
+            f"**ICCRE v{MODEL_VERSION}** — {PRODUCT_TAGLINE}\n\n"
+            f"{PRODUCT_SUBTITLE}\n\n"
+            f"Built on NGFS Phase III 2023 · ISSB IFRS S2 · RBI 2024 · SEBI BRSR Core\n\n"
+            f"Contact: {CONTACT_EMAIL}"
+        ),
+    },
+)
+
+
+def _secret_or_env(name: str, default=None):
+    """Return Streamlit secret first, then environment variable, then default."""
+    try:
+        value = st.secrets.get(name)
+        if value:
+            return value
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+
+def _get_groq_client():
+    """Create Groq client from Streamlit Secrets or environment variable."""
+    api_key = _secret_or_env("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is missing. Add it in Streamlit Secrets or environment variables.")
+    return Groq(api_key=api_key)
 # ============================================================
 # GIS FILE LOADER — downloads large files from cloud storage
 # on first run so they don't need to be in the GitHub repo
 # ============================================================
-import os, urllib.request
-
-GCS_BASE = "https://storage.googleapis.com/iccre-gis-data"  # ← your bucket name
+GCS_BASE = _secret_or_env("GCS_BASE", "https://storage.googleapis.com/iccre-gis-data")  # ← override in Streamlit Secrets if needed
 
 _GIS_FILES = {
     "Data/floodMapGL_rp100y.tif":        f"{GCS_BASE}/floodMapGL_rp100y.tif",
@@ -132,15 +180,26 @@ def _ensure_gis_files():
     failed = []
     for local_path, url in _GIS_FILES.items():
         if not os.path.exists(local_path):
+            tmp_path = f"{local_path}.download"
             try:
-                urllib.request.urlretrieve(url, local_path)
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                urllib.request.urlretrieve(url, tmp_path)
+                os.replace(tmp_path, local_path)
             except Exception as e:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                 failed.append(f"{local_path}: {e}")
     return failed
 
 _gis_missing = _ensure_gis_files()
 if _gis_missing:
     st.sidebar.warning("⚠️ Some GIS files failed to load. Physical Risk tab may show zeros.")
+if RASTERIO_IMPORT_ERROR:
+    st.sidebar.warning("⚠️ Rasterio failed to import. Flood layer will be disabled, but other modules can still run.")
 # ============================================================
 # DESIGN SYSTEM  (UI-01)
 # ============================================================
@@ -282,25 +341,8 @@ def log_model_run(run_type, payload):
     df.to_csv(f, mode="a", header=not f.exists(), index=False)
 
 # ============================================================
-# PAGE CONFIG & CSS  (UI-01)
+# CSS  (UI-01)
 # ============================================================
-st.set_page_config(
-    page_title="ICCRE — India Climate Credit Risk Engine",
-    page_icon="🌍",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        "Get Help": f"mailto:{CONTACT_EMAIL}",
-        "Report a bug": f"mailto:{CONTACT_EMAIL}?subject=Bug Report",
-        "About": (
-            f"**ICCRE v{MODEL_VERSION}** — {PRODUCT_TAGLINE}\n\n"
-            f"{PRODUCT_SUBTITLE}\n\n"
-            f"Built on NGFS Phase III 2023 · ISSB IFRS S2 · RBI 2024 · SEBI BRSR Core\n\n"
-            f"Contact: {CONTACT_EMAIL}"
-        ),
-    },
-)
-
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
@@ -758,9 +800,18 @@ def cyclone_damage(w):
 # ============================================================
 @st.cache_data
 def load_ngfs():
-    df = pd.read_csv(r"Data/ngfs_scenarios.csv")
-    df.columns = df.columns.str.strip().str.replace("﻿","",regex=False)
-    return df
+    candidates = [
+        Path("Data/ngfs_scenarios.csv"),
+        Path("data/ngfs_scenarios.csv"),
+        Path("ngfs_scenarios.csv"),
+    ]
+    for path in candidates:
+        if path.exists():
+            df = pd.read_csv(path)
+            df.columns = df.columns.str.strip().str.replace("﻿", "", regex=False)
+            return df
+    st.error("❌ File not found: Data/ngfs_scenarios.csv. Upload it to GitHub exactly at Data/ngfs_scenarios.csv.")
+    st.stop()
 
 df_ngfs = load_ngfs()
 for c in df_ngfs.select_dtypes("object"):
@@ -3477,7 +3528,7 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
 
             with st.spinner(f"Your {selected_advisor} is analysing the data..."):
                 try:
-                    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+                    client = _get_groq_client()
                     resp = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
                         messages=[
@@ -3493,7 +3544,7 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
                     st.session_state["ai_outputs"][selected_advisor] = output
                     st.session_state["ai_outputs"]["_last_advisor"] = selected_advisor
                 except Exception as e:
-                    st.error(f"AI error: {e}. Check that GROQ_API_KEY is set in your environment.")
+                    st.error(f"AI error: {e}. Check that GROQ_API_KEY is set in Streamlit Secrets or your environment.")
 
         # ── Display output ──────────────────────────────────────────────
         ai_outs = st.session_state.get("ai_outputs", {})
@@ -3782,7 +3833,7 @@ with validation_tab:
 
             if not {"Year", "Observed_PD"}.issubset(df_hist.columns):
                 st.error("CSV must contain: `Year`, `Observed_PD`")
-            pass
+                st.stop()
 
             df_hist["Year"] = df_hist["Year"].astype(int)
             df_hist["Observed_PD"] = pd.to_numeric(df_hist["Observed_PD"], errors="coerce")
@@ -3800,7 +3851,7 @@ with validation_tab:
 
             if df_cmp.empty:
                 st.warning("No overlapping years between uploaded data and model output.")
-            pass
+                st.stop()
 
             # ── METRICS ──
             df_cmp["Error"]    = df_cmp["Model_PD"] - df_cmp["Observed_PD"]
@@ -3984,7 +4035,7 @@ with calibration_tab:
 
         if df_cc.empty:
             st.warning("No overlapping years between calibration data and model output.")
-            pass
+            st.stop()
 
         # Grid search parameters
         st.subheader("🔧 Search Grid Configuration")
