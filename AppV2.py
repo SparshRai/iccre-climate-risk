@@ -1,9 +1,9 @@
-MODEL_VERSION    = "1.4.3"
-PARAMETER_VERSION = "ClimateParams_v1.4_equation_corrected"
+MODEL_VERSION    = "1.4.4"
+PARAMETER_VERSION = "ClimateParams_v1.4_final_logic_corrected"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
 MODEL_BUILD_DATE  = "2026-04-05"
-MODEL_HASH        = "ICCRE_v1.4_equation_corrected"
+MODEL_HASH        = "ICCRE_v1.4_final_logic_corrected"
 
 # ============================================================
 # PRODUCT & BRANDING
@@ -15,6 +15,10 @@ PRODUCT_URL      = "https://iccre.in"
 LINKEDIN_URL     = "https://linkedin.com/company/iccre"
 MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
 MODEL_CONFIDENCE_DEFAULT = "Medium — assumption-led, scenario-consistent, not borrower-calibrated"
+# Public demo defaults for more conservative, market-ready interpretation.
+# Physical EAD allocation defaults to company-wide proportional exposure when asset register covers
+# only part of company revenue; full-EAD allocation remains available as conservative advanced mode.
+DEFAULT_PHYSICAL_EAD_MODE = "Company-wide proportional exposure"
 
 # ── Demo dataset: Bharat Steel Industries Ltd (fictional) ──
 # Pre-configured to produce visually compelling, realistic demo output.
@@ -356,6 +360,14 @@ def _fmt_num(v, suffix="", decimals=2):
         return f"{float(v):,.{decimals}f}{suffix}"
     except Exception:
         return "—"
+
+def _fmt_capex_position(v):
+    try:
+        v=float(v)
+        return f"₹{abs(v):,.0f} Cr {'Gap' if v>0 else 'Surplus' if v<0 else 'Balanced'}"
+    except Exception:
+        return "—"
+
 
 def scope_badge(scope: str, detail: str = ""):
     """Render a clear distinction between reporting-year and multi-year outputs."""
@@ -1392,29 +1404,53 @@ if any_ran:
             ws_sum.cell(row=i, column=2, value=str(v)).font = Font(color="E2E8F0")
 
         row_s = 14
-        df_sum_data = []
+        # Summary is intentionally split to avoid mixing reporting-year values with multi-year peaks.
+        reporting_rows = []
+        peak_rows = []
         if st.session_state.get("transition_ran"):
             df_t_x = st.session_state.get("df_transition")
             if isinstance(df_t_x, pd.DataFrame) and not df_t_x.empty:
-                df_sum_data.append({"Metric":"Peak Transition PD","Value":f"{df_t_x['PD_Transition'].max():.4f}"})
-                df_sum_data.append({"Metric":"Max ECL (₹ Cr)","Value":f"{df_t_x['ECL_Transition'].max():.2f}"})
-                df_sum_data.append({"Metric":"Min DSCR","Value":f"{df_t_x['DSCR'].min():.3f}"})
-                df_sum_data.append({"Metric":"Max Stranded Assets (₹ Cr)","Value":f"{df_t_x['Stranded_Assets'].max():.0f}"})
+                df_rep = df_t_x[df_t_x["Year"] == REPORTING_YEAR]
+                if not df_rep.empty:
+                    reporting_rows.extend([
+                        {"Metric":"Reporting-Year Transition PD", "Value":f"{df_rep['PD_Transition'].max():.4f}"},
+                        {"Metric":"Reporting-Year ECL (₹ Cr)", "Value":f"{df_rep['ECL_Transition'].max():.2f}"},
+                        {"Metric":"Reporting-Year DSCR", "Value":f"{df_rep['DSCR'].min():.3f}"},
+                        {"Metric":"Reporting-Year Carbon Burden", "Value":f"{df_rep['Carbon_Burden'].max():.4f}"},
+                    ])
+                peak_rows.extend([
+                    {"Metric":"Peak Transition PD", "Value":f"{df_t_x['PD_Transition'].max():.4f}"},
+                    {"Metric":"Max ECL (₹ Cr)", "Value":f"{df_t_x['ECL_Transition'].max():.2f}"},
+                    {"Metric":"Worst DSCR", "Value":f"{df_t_x['DSCR'].min():.3f}"},
+                    {"Metric":"Max Stranded Assets (₹ Cr)", "Value":f"{df_t_x['Stranded_Assets'].max():.0f}"},
+                ])
+                nv = df_t_x[df_t_x.get('Business_NonViable', False) == True] if 'Business_NonViable' in df_t_x.columns else pd.DataFrame()
+                if not nv.empty:
+                    peak_rows.append({"Metric":"First Business Non-Viable Year", "Value":str(int(nv['Year'].min()))})
         if st.session_state.get("physical_ran"):
             ps_x = st.session_state.get("phys_summary", {})
             if ps_x:
-                df_sum_data.append({"Metric":"Physical Risk PD","Value":f"{ps_x.get('Physical Risk PD',0):.4f}"})
-                df_sum_data.append({"Metric":"Physical ECL (₹ Cr)","Value":f"{ps_x.get('Physical ECL (₹ Cr)',0):.2f}"})
-                df_sum_data.append({"Metric":"Physical ΔECL (₹ Cr)","Value":f"{ps_x.get('ΔECL (₹ Cr)',0):.2f}"})
-                df_sum_data.append({"Metric":"Physical Asset Revenue Coverage (%)","Value":f"{ps_x.get('Asset Revenue Coverage %',0):.1f}"})
+                reporting_rows.extend([
+                    {"Metric":"Physical Risk PD", "Value":f"{ps_x.get('Physical Risk PD',0):.4f}"},
+                    {"Metric":"Physical ECL (₹ Cr)", "Value":f"{ps_x.get('Physical ECL (₹ Cr)',0):.2f}"},
+                    {"Metric":"Physical ΔECL (₹ Cr)", "Value":f"{ps_x.get('ΔECL (₹ Cr)',0):.2f}"},
+                    {"Metric":"Physical Asset Revenue Coverage (%)", "Value":f"{ps_x.get('Asset Revenue Coverage %',0):.1f}"},
+                    {"Metric":"Effective Physical EAD (₹ Cr)", "Value":f"{ps_x.get('Effective Physical EAD (₹ Cr)',0):.2f}"},
+                    {"Metric":"Physical EAD Allocation Mode", "Value":str(ps_x.get('Physical EAD Allocation Mode',''))},
+                ])
         if st.session_state.get("brsr_ran"):
-            df_sum_data.append({"Metric":"BRSR Governance Signal (bps)","Value":f"{st.session_state.get('brsr_pd_adj',0)*10000:.1f}"})
+            reporting_rows.append({"Metric":"BRSR Governance Signal (bps)", "Value":f"{st.session_state.get('brsr_pd_adj',0)*10000:.1f}"})
         if st.session_state.get("mc_results"):
             mc_x = st.session_state["mc_results"]
-            df_sum_data.append({"Metric":"MC Mean PD","Value":f"{mc_x.get('Mean_PD',0):.4f}"})
-            df_sum_data.append({"Metric":"MC Climate VaR 95% (₹ Cr)","Value":f"{mc_x.get('ECL_95',0):.2f}"})
-        if df_sum_data:
-            _write_df(ws_sum, pd.DataFrame(df_sum_data), start_row=row_s)
+            peak_rows.append({"Metric":"MC Mean PD", "Value":f"{mc_x.get('Mean_PD',0):.4f}"})
+            peak_rows.append({"Metric":"MC Climate VaR 95% (₹ Cr)", "Value":f"{mc_x.get('ECL_95',0):.2f}"})
+        if reporting_rows:
+            _title(ws_sum, f"A. Reporting-Year Snapshot — {REPORTING_YEAR}", row=row_s)
+            _write_df(ws_sum, pd.DataFrame(reporting_rows), start_row=row_s+2)
+        if peak_rows:
+            next_row = row_s + 4 + len(reporting_rows)
+            _title(ws_sum, "B. Multi-Year Scenario Peak / Stress", row=next_row)
+            _write_df(ws_sum, pd.DataFrame(peak_rows), start_row=next_row+2)
 
         # ── Sheet 2: Assumptions ──
         ws_ass = wb.create_sheet("Assumptions")
@@ -1640,6 +1676,10 @@ def run_transition_engine(df_long, selected_scenarios, revenue_0, ebitda_margin_
             dscr_gap = np.clip(1.5-dscr,-4.0,6.0)
             logit_pd = logit(base_pd)+alpha_dscr*dscr_gap+beta_carbon_credit*carbon_burden
             pd_t = np.clip(sigmoid(logit_pd),PD_FLOOR,PD_CAP)
+            # Public credit-risk interpretation: climate adjustment should not reduce borrower risk below
+            # the user-entered borrower base PD. Scenario-implied PD may be lower under benign cases, but
+            # climate-adjusted PD is floored at base PD for consistency and market-facing credibility.
+            pd_t = max(float(base_pd), float(pd_t))
             if business_non_viable:
                 pd_t = PD_CAP
             lgd_t = np.clip(LGD_0*(1+0.2*carbon_burden+LGD_PHYSICAL_MULTIPLIER*physical_loss),0,1)
@@ -1660,17 +1700,38 @@ def run_transition_engine(df_long, selected_scenarios, revenue_0, ebitda_margin_
 # ============================================================
 # PHYSICAL RISK HELPERS  (PHYS-01)
 # ============================================================
-def extract_ngfs_temperature_path(df_long, scenarios, baseline_scenario, years):
+def extract_ngfs_temperature_path(df_long, scenarios, reporting_year, years):
+    """Return scenario temperature path using same-scenario reporting-year temperature as baseline.
+
+    Previous versions compared each scenario against Current Policies in the same year, which made
+    Current Policies show zero incremental physical risk over time. For physical risk projections,
+    the clearer interpretation is absolute forward movement from the selected reporting-year baseline
+    for each scenario.
+    """
     records = []
     for scen in scenarios:
         d_s = df_long[df_long["Scenario"]==scen]
-        d_b = df_long[df_long["Scenario"]==baseline_scenario]
+        temp_rows = d_s[d_s["Variable"].str.contains("Temperature",case=False,na=False)]
+        if temp_rows.empty:
+            continue
+        # Use selected reporting year when available; otherwise nearest available year.
+        avail_years = sorted(temp_rows["Year"].unique())
+        base_year = reporting_year if reporting_year in avail_years else min(avail_years, key=lambda yy: abs(int(yy)-int(reporting_year)))
+        base_val = temp_rows.loc[temp_rows["Year"]==base_year, "Value"]
+        if base_val.empty:
+            continue
+        bv = float(base_val.iloc[0])
         for yr in years:
-            tr = d_s.loc[(d_s["Year"]==yr)&d_s["Variable"].str.contains("Temperature",case=False),"Value"]
-            br = d_b.loc[(d_b["Year"]==yr)&d_b["Variable"].str.contains("Temperature",case=False),"Value"]
-            if tr.empty or br.empty: continue
-            tv = float(tr.iloc[0]); bv = float(br.iloc[0])
-            records.append({"Scenario":scen,"Year":yr,"Temp_C":round(tv,3),"Delta_T_vs_Baseline":round(max(0.0,tv-bv),3)})
+            tr = temp_rows.loc[temp_rows["Year"]==yr,"Value"]
+            if tr.empty:
+                continue
+            tv = float(tr.iloc[0])
+            records.append({
+                "Scenario":scen,"Year":int(yr),"Temp_C":round(tv,3),
+                "Baseline_Year":int(base_year),"Baseline_Temp_C":round(bv,3),
+                "Delta_T_C":round(max(0.0,tv-bv),3),
+                "Delta_T_vs_Baseline":round(max(0.0,tv-bv),3),
+            })
     return pd.DataFrame(records)
 
 def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_revenue_loss_cr,
@@ -1683,7 +1744,7 @@ def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_rev
     """
     records = []
     for _, row in df_ngfs_temp.iterrows():
-        dt = row["Delta_T_vs_Baseline"]
+        dt = row["Delta_T_C"] if "Delta_T_C" in row else row["Delta_T_vs_Baseline"]
         # Illustrative non-linear physical damage multiplier (replaces 0.25*dt)
         dm       = 1.0 + 0.20*dt + 0.04*dt**2
         sigma    = 0.08*dt
@@ -2114,6 +2175,15 @@ with physical_tab:
         EBITDA_MARGIN_PHYS = float(fc1.number_input("EBITDA Margin",value=float(ebitda_margin_0),step=0.01,key="phys_em"))
         INTEREST_PHYS      = float(fc2.number_input("Annual Interest (₹ Cr)",value=float(interest_payment),min_value=1.0,key="phys_int"))
         LGD_PHYS=float(LGD_0); EAD_PHYS=float(exposure_at_default)
+        ead_allocation_mode = st.radio(
+            "Physical EAD Allocation Mode",
+            ["Company-wide proportional exposure", "Full EAD allocated to entered assets"],
+            index=0,
+            horizontal=True,
+            help=("Use proportional mode when the asset register covers only part of company revenue. "
+                  "Use full-EAD mode only when the loan is secured against or economically dependent on the listed assets."),
+            key="phys_ead_mode",
+        )
 
         # Scenario alignment
         transition_ran_phys = st.session_state.get("transition_ran",False)
@@ -2223,7 +2293,13 @@ with physical_tab:
                 DSCR_PHYS_BASE=(TOTAL_EBITDA-DELTA_EBITDA)/max(INTEREST_PHYS,1e-6)
                 df["PD_Physical"]=(df["base_pd"]*(1+gamma_phys*df["D_total"])).clip(0,1)
                 revenue_weight = df["revenue_inr_cr"] / max(df["revenue_inr_cr"].sum(), 1e-6)
-                df["EAD_allocated_cr"] = EAD_PHYS * revenue_weight
+                asset_revenue_coverage = float(df["revenue_inr_cr"].sum()/max(revenue_0,1e-6))
+                if ead_allocation_mode == "Company-wide proportional exposure":
+                    effective_ead_phys = EAD_PHYS * min(max(asset_revenue_coverage, 0.0), 1.0)
+                else:
+                    effective_ead_phys = EAD_PHYS
+                df["EAD_allocated_cr"] = effective_ead_phys * revenue_weight
+                df["EAD_allocation_mode"] = ead_allocation_mode
                 df["Baseline_ECL_asset"] = df["base_pd"] * df["lgd"] * df["EAD_allocated_cr"]
                 df["ECL_asset"] = df["PD_Physical"] * df["lgd"] * df["EAD_allocated_cr"]
                 df["Delta_ECL_asset"] = (df["ECL_asset"] - df["Baseline_ECL_asset"]).clip(lower=0)
@@ -2231,15 +2307,15 @@ with physical_tab:
                 PHYSICAL_ECL=df["ECL_asset"].sum(); DELTA_ECL=df["Delta_ECL_asset"].sum()
 
             # NGFS projection (PHYS-01: transparent illustrative physical damage multiplier)
-            df_ngfs_temp = extract_ngfs_temperature_path(df_long,phys_scenarios,BASELINE_SCENARIO,phys_years)
+            df_ngfs_temp = extract_ngfs_temperature_path(df_long,phys_scenarios,REPORTING_YEAR,phys_years)
             df_phys_proj = project_physical_risk_ngfs(
                 df_ngfs_temp,df["D_total"].mean(),TOTAL_REV_LOSS,TOTAL_EBITDA,INTEREST_PHYS,
-                PD_PHYS,LGD_PHYS,EAD_PHYS,gamma_phys)
+                PD_PHYS,LGD_PHYS,effective_ead_phys,gamma_phys)
 
             st.session_state["phys_assets"]=df
             st.session_state["phys_summary"]={"Total Revenue Loss (₹ Cr)":TOTAL_REV_LOSS,
                 "EBITDA Loss (₹ Cr)":DELTA_EBITDA,"Post-Risk DSCR":DSCR_PHYS_BASE,
-                "Physical Risk PD":PD_PHYS,"Physical ECL (₹ Cr)":PHYSICAL_ECL,"ΔECL (₹ Cr)":DELTA_ECL,"Assets Analysed":len(df),"Asset Revenue Coverage %":df["revenue_inr_cr"].sum()/max(revenue_0,1e-6)*100}
+                "Physical Risk PD":PD_PHYS,"Physical ECL (₹ Cr)":PHYSICAL_ECL,"ΔECL (₹ Cr)":DELTA_ECL,"Assets Analysed":len(df),"Asset Revenue Coverage %":asset_revenue_coverage*100,"Effective Physical EAD (₹ Cr)":effective_ead_phys,"Physical EAD Allocation Mode":ead_allocation_mode}
             st.session_state["df_physical_projection"]=df_phys_proj
             st.session_state["physical_ran"]=True
             st.success("✅ Physical Risk Engine v1.2 executed")
@@ -2252,6 +2328,7 @@ with physical_tab:
                 {"title":"Post-Risk DSCR", "value":_fmt_num(DSCR_PHYS_BASE, "×", 2), "subtitle":"Debt service capacity after physical-risk shock", "accent":C["mint"] if DSCR_PHYS_BASE>=1.2 else C["coral"], "scope":"Reporting year"},
                 {"title":"Physical Risk PD", "value":_fmt_pct(PD_PHYS), "subtitle":"Portfolio average physical-risk adjusted PD", "accent":C["accent2"], "scope":"Reporting year"},
                 {"title":"ΔECL", "value":_fmt_money_cr(DELTA_ECL, 2), "subtitle":"Incremental expected credit loss", "accent":C["purple"], "scope":"Reporting year"},
+                {"title":"Physical EAD Used", "value":_fmt_money_cr(effective_ead_phys, 1), "subtitle":ead_allocation_mode, "accent":C["mint"], "scope":"Reporting year"},
             ], columns=3)
 
             scope_badge("single", f"Asset-level hazard scores for reporting year {REPORTING_YEAR}")
@@ -2423,7 +2500,7 @@ with targets_tab:
                     elif row["Year"]<=2040: em,rv,mr=m_em,m_rev,m_mar
                     else: em,rv,mr=l_em,l_rev,l_mar
                     rt=row["Revenue"]*(1+rv/100); mt=row["EBITDA_Margin"]*(1+mr/100)
-                    pt=np.clip(row["PD_Transition"]*(1-em/100),0,1)
+                    pt=np.clip(max(base_pd, row["PD_Transition"]*(1-em/100)),0,1)
                     et=ecl_cr(pt, row["LGD"], exposure_at_default)
                     return pd.Series({"Revenue_Target":rt,"EBITDA_Target":rt*mt,"PD_Target":pt,"ECL_Target":et})
                 df_tgt=pd.concat([df_base[["Scenario","Year"]],df_base.apply(apply_t,axis=1)],axis=1).reset_index(drop=True)
@@ -2554,15 +2631,14 @@ with integrated_tab:
                 pd_phys=float(ps.get("Physical Risk PD",0)); ecl_phys=float(ps.get("ΔECL (₹ Cr)",0))
                 dscr_phys=float(ps.get("Post-Risk DSCR",1.5)); rev_loss_phys=float(ps.get("Total Revenue Loss (₹ Cr)",0))
 
-        # Scenario-consistent physical PD
+        # Physical PD aligned with the integrated stress horizon.
+        # Integrated transition metrics use peak/worst path values, so physical risk should not be
+        # pulled from an arbitrary first scenario at the reporting year. Use the larger of the
+        # reporting-year asset snapshot and the physical projection peak.
         pd_phys_scen=pd_phys
         df_pp=st.session_state.get("df_physical_projection")
-        if isinstance(df_pp,pd.DataFrame) and not df_pp.empty and transition_ran_i:
-            df_ti2=st.session_state.get("df_transition")
-            if isinstance(df_ti2,pd.DataFrame) and not df_ti2.empty:
-                sel_scen=df_ti2["Scenario"].unique()[0]
-                rows=df_pp[(df_pp["Scenario"]==sel_scen)&(df_pp["Year"]==REPORTING_YEAR)]
-                if not rows.empty: pd_phys_scen=float(rows["PD_Physical"].iloc[0])
+        if isinstance(df_pp,pd.DataFrame) and not df_pp.empty and "PD_Physical" in df_pp.columns:
+            pd_phys_scen=max(float(pd_phys or 0.0), float(df_pp["PD_Physical"].max()))
         if pd_phys_scen is not None: pd_phys_scen=float(np.clip(pd_phys_scen,0,1))
 
         # Integrated borrower PD: use union probability, not only joint/intersection probability.
@@ -2668,12 +2744,12 @@ with integrated_tab:
                 }).round(4).reset_index().rename(columns={
                     "PD_Transition":"Peak PD","ECL_Transition":"Peak ECL (₹Cr)",
                     "DSCR":"Min DSCR","Carbon_Burden":"Max Carbon Burden",
-                    "EBITDA_Margin":"Min EBITDA Margin","Stranded_Assets":"Stranded (₹Cr)","CAPEX_Gap":"CAPEX Gap (₹Cr)"
+                    "EBITDA_Margin":"Min EBITDA Margin","Stranded_Assets":"Stranded (₹Cr)","CAPEX_Gap":"CAPEX Gap / Surplus (₹Cr)"
                 }))
                 st.dataframe(df_stress.style
                     .format({"Peak PD":"{:.3%}","Peak ECL (₹Cr)":"{:.1f}","Min DSCR":"{:.2f}",
                              "Max Carbon Burden":"{:.2%}","Min EBITDA Margin":"{:.2%}",
-                             "Stranded (₹Cr)":"{:.0f}","CAPEX Gap (₹Cr)":"{:.0f}"})
+                             "Stranded (₹Cr)":"{:.0f}","CAPEX Gap / Surplus (₹Cr)":"{:.0f}"})
                     .background_gradient(subset=["Peak PD"],cmap="Reds")
                     .background_gradient(subset=["Min DSCR"],cmap="RdYlGn"),
                     width="stretch",hide_index=True)
@@ -2700,7 +2776,7 @@ with integrated_tab:
             {"Metric":"Capital Stress Signal","Value":capital_signal,"ISSB S2":"§16"},
             {"Metric":"Integrated Risk Score (0–100)","Value":f"{risk_score_int}","ISSB S2":"§14–16"},
             {"Metric":"Stranded Assets (₹ Cr)","Value":f"{stranded_t:.0f}" if stranded_t else "—","ISSB S2":"§22"},
-            {"Metric":"CAPEX Gap (₹ Cr)","Value":f"{capex_t:.0f}" if capex_t else "—","ISSB S2":"§14"},
+            {"Metric":"CAPEX Gap / Surplus (₹ Cr)","Value":_fmt_capex_position(capex_t) if capex_t is not None else "—","ISSB S2":"§14"},
         ])
         st.dataframe(df_isummary.style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
             width="stretch",hide_index=True)
@@ -2729,14 +2805,15 @@ with integrated_tab:
                 cps=cp_mc*np.exp(MC_CARBON_VOL*sh_c); pds=pl_mc*np.exp(sh_p)
                 cc=(TOTAL_EMISSIONS*cps*USD_INR/1e7)*(1-carbon_pass_through)
                 rv=revenue_0*(1+gdp_sensitivity*sh_g)*(1-pds)
+                rv=max(rv, revenue_0*0.05)
                 eb=rv*ebitda_margin_0-cc; cbu=cc/max(rv,1)
                 cs=BASE_CREDIT_SPREAD*(1+spread_beta*cbu)
                 ds=eb/max(interest_payment*(1+cs),1e-6)
                 dg=np.clip(1.5-ds,-4.0,6.0)
                 lp=logit(base_pd)+alpha_dscr*dg+beta_carbon_credit*cbu
-                pt=np.clip(sigmoid(lp),PD_FLOOR,PD_CAP)
+                pt=np.clip(max(base_pd, sigmoid(lp)),PD_FLOOR,PD_CAP)
                 pp=np.clip(pd_phys_scen*(1+pds),0,1) if physical_ran_i and pd_phys_scen else 0
-                pj=gaussian_copula_pd(pt,pp,correlation) if physical_ran_i else pt
+                pj=combined_pd_union(pt,pp,correlation)[0] if physical_ran_i else pt
                 pj=float(np.clip(pj*brsr_governance_multiplier(brsr_pd_adj),PD_FLOOR,PD_CAP))
                 lj=np.clip(LGD_0*(1+0.2*cbu+LGD_PHYSICAL_MULTIPLIER*pds),0,1)
                 pd_sim.append(pj); ecl_sim.append(ecl_cr(pj, lj, EAD))
@@ -2769,7 +2846,7 @@ with integrated_tab:
             for cp in np.linspace(50,500,50):
                 cc=TOTAL_EMISSIONS*cp*USD_INR/1e7; cb=cc/revenue_0
                 lp=logit(base_pd)+beta_carbon_credit*cb+alpha_dscr*np.clip(1.5-(dscr_trans or 1.5),-4,6)
-                if sigmoid(lp)>=tgt_pd: breach=cp; break
+                if max(base_pd, sigmoid(lp))>=tgt_pd: breach=cp; break
             if breach: st.error(f"⚠️ PD exceeds {tgt_pd:.2%} when carbon price reaches **${breach:.0f}/tCO₂**")
             else: st.success("No breach in tested carbon price range (up to $500/tCO₂)")
 
@@ -2866,7 +2943,7 @@ with plots_tab:
 
                 # Row 3: EBITDA Margin + Stranded Assets + CAPEX Gap (3-panel subplot)
                 fig3 = make_subplots(rows=1, cols=3,
-                    subplot_titles=("EBITDA Margin (%)", "Stranded Assets (₹ Cr)", "CAPEX Gap (₹ Cr)"))
+                    subplot_titles=("EBITDA Margin (%)", "Stranded Assets (₹ Cr)", "CAPEX Gap / Surplus (₹ Cr)"))
                 for scen in df_tp_f["Scenario"].unique():
                     ds = df_tp_f[df_tp_f["Scenario"]==scen]; clr = _scen_color(scen)
                     fig3.add_trace(go.Scatter(x=ds["Year"], y=ds["EBITDA_Margin"]*100, mode="lines+markers",
@@ -3035,7 +3112,9 @@ with plots_tab:
                     fig_rl = go.Figure()
                     for haz, col, clr in [("H_flood","Flood",C["accent3"]),("H_heat","Heat",C["amber"]),("H_cyclone","Cyclone",C["coral"])]:
                         if haz in phys.columns:
-                            rl = phys["revenue_loss"] * phys[haz] / phys["D_total"].replace(0,1)
+                            # Prefer pre-computed normalized revenue-loss components from Physical module.
+                            comp_col = {"H_flood":"rl_flood","H_heat":"rl_heat","H_cyclone":"rl_cyclone"}.get(haz)
+                            rl = phys[comp_col] if comp_col in phys.columns else phys["revenue_loss"] * phys[haz] / phys["D_total"].replace(0,1)
                             fig_rl.add_trace(go.Bar(x=phys["asset_id"], y=rl.fillna(0), name=col, marker_color=clr))
                     fig_rl.update_layout(**_chart_layout("Revenue Loss by Asset & Hazard (₹ Cr)", 300), barmode="stack")
                     _ax_style(fig_rl)
