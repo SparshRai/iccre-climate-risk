@@ -675,7 +675,7 @@ hr {{ border-color: {C["bg_mid"]} !important; }}
 code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; border-radius: 4px; font-family: 'IBM Plex Mono', monospace !important; }}
 
 /* ── PUBLIC RESULT CARDS — no text truncation ───────────── */
-.metric-card-pro {
+.metric-card-pro {{
     background: linear-gradient(135deg, #0D3B4A 0%, #0B4D4B 100%);
     border: 1px solid #115E6D;
     border-radius: 12px;
@@ -688,8 +688,8 @@ code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; b
     gap: 6px;
     overflow-wrap: anywhere;
     word-break: normal;
-}
-.metric-title-pro {
+}}
+.metric-title-pro {{
     color: #E6F1F5 !important;
     font-size: 12px;
     font-weight: 700;
@@ -697,45 +697,45 @@ code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; b
     letter-spacing: .07em;
     white-space: normal !important;
     line-height: 1.25;
-}
-.metric-value-pro {
+}}
+.metric-value-pro {{
     font-family: 'IBM Plex Mono', monospace !important;
     font-size: clamp(20px, 2.4vw, 30px);
     font-weight: 800;
     line-height: 1.08;
     white-space: normal !important;
-}
-.metric-subtitle-pro {
+}}
+.metric-subtitle-pro {{
     color: #94A3B8 !important;
     font-size: 11px;
     line-height: 1.35;
     white-space: normal !important;
-}
-.metric-scope {
+}}
+.metric-scope {{
     margin-top: 4px;
     color: #80ED99 !important;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: .04em;
     text-transform: uppercase;
-}
-.scope-badge {
+}}
+.scope-badge {{
     background: rgba(13,59,74,.85);
     border: 1px solid #115E6D;
     border-radius: 9px;
     padding: 10px 13px;
     margin: 12px 0 10px;
-}
-.scope-badge span {
+}}
+.scope-badge span {{
     color: #FFFFFF !important;
     font-size: 13px;
     font-weight: 800;
-}
-.scope-badge small {
+}}
+.scope-badge small {{
     color: #94A3B8 !important;
     font-size: 11px;
     margin-left: 8px;
-}
+}}
 </style>
 """, unsafe_allow_html=True)
 
