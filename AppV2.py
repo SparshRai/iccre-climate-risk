@@ -1,9 +1,9 @@
-MODEL_VERSION    = "1.2.0"
-PARAMETER_VERSION = "ClimateParams_v1.2"
+MODEL_VERSION    = "1.4.3"
+PARAMETER_VERSION = "ClimateParams_v1.4_equation_corrected"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
 MODEL_BUILD_DATE  = "2026-04-05"
-MODEL_HASH        = "ICCRE_v1.2_prod"
+MODEL_HASH        = "ICCRE_v1.4_equation_corrected"
 
 # ============================================================
 # PRODUCT & BRANDING
@@ -72,7 +72,7 @@ DEMO_DATASET = {
 #          Live integration block linking BRSR risk overlay to transition PD.
 #
 # PHYS-01  Physical risk methodology corrected:
-#          IPCC AR6 non-linear damage function: 1+0.20·ΔT+0.04·ΔT²
+#          Illustrative non-linear physical damage multiplier: 1+0.20·ΔT+0.04·ΔT²
 #          (replaces flat 1+0.25·ΔT multiplier with no basis).
 #          ΔT extracted directly from NGFS scenario temperature pathways
 #          (same df_long as transition engine — fully aligned).
@@ -846,35 +846,35 @@ SECTOR_PARAMETER_REGISTRY = {
         "transition_physical_corr": 0.35, "gdp_sensitivity": 1.20, "carbon_demand": -0.25,
         "alpha_dscr": 1.10, "beta_carbon_credit": 1.40, "gamma_physical": 0.60, "delta_gdp": 0.80,
         "carbon_vol": 0.25, "physical_vol": 0.20, "gdp_vol": 0.05, "spread_sensitivity": 1.40,
-        "ghg_p25": 1.8, "ghg_p50": 2.8, "ghg_p75": 4.2, "energy_p50": 125, "energy_p75": 180,
+        "ghg_p25": 250.0, "ghg_p50": 400.0, "ghg_p75": 650.0, "energy_p50": 125, "energy_p75": 180,
         "confidence": "Medium", "basis": "Sector-intensity expert benchmark; calibrate with borrower data when available."
     },
     "Power": {
         "transition_physical_corr": 0.30, "gdp_sensitivity": 0.70, "carbon_demand": -0.10,
         "alpha_dscr": 1.00, "beta_carbon_credit": 1.60, "gamma_physical": 0.50, "delta_gdp": 0.60,
         "carbon_vol": 0.22, "physical_vol": 0.18, "gdp_vol": 0.04, "spread_sensitivity": 1.20,
-        "ghg_p25": 3.2, "ghg_p50": 5.1, "ghg_p75": 7.8, "energy_p50": 85, "energy_p75": 130,
+        "ghg_p25": 400.0, "ghg_p50": 700.0, "ghg_p75": 1100.0, "energy_p50": 85, "energy_p75": 130,
         "confidence": "Medium", "basis": "High carbon-price sensitivity with partial pass-through; calibrate locally."
     },
     "Cement": {
         "transition_physical_corr": 0.32, "gdp_sensitivity": 1.10, "carbon_demand": -0.20,
         "alpha_dscr": 1.05, "beta_carbon_credit": 1.20, "gamma_physical": 0.55, "delta_gdp": 0.70,
         "carbon_vol": 0.23, "physical_vol": 0.19, "gdp_vol": 0.05, "spread_sensitivity": 1.30,
-        "ghg_p25": 2.1, "ghg_p50": 3.4, "ghg_p75": 5.0, "energy_p50": 110, "energy_p75": 160,
+        "ghg_p25": 200.0, "ghg_p50": 350.0, "ghg_p75": 550.0, "energy_p50": 110, "energy_p75": 160,
         "confidence": "Medium", "basis": "Energy/process-emission heavy sector; use plant-level calibration when available."
     },
     "Oil & Gas": {
         "transition_physical_corr": 0.40, "gdp_sensitivity": 0.90, "carbon_demand": -0.30,
         "alpha_dscr": 0.90, "beta_carbon_credit": 1.50, "gamma_physical": 0.65, "delta_gdp": 0.50,
         "carbon_vol": 0.30, "physical_vol": 0.22, "gdp_vol": 0.06, "spread_sensitivity": 1.50,
-        "ghg_p25": 1.4, "ghg_p50": 2.2, "ghg_p75": 3.5, "energy_p50": 70, "energy_p75": 110,
+        "ghg_p25": 120.0, "ghg_p50": 220.0, "ghg_p75": 400.0, "energy_p50": 70, "energy_p75": 110,
         "confidence": "Medium", "basis": "Transition and stranded-asset sensitive; refine by business mix."
     },
     "Manufacturing": {
         "transition_physical_corr": 0.25, "gdp_sensitivity": 1.00, "carbon_demand": -0.15,
         "alpha_dscr": 1.00, "beta_carbon_credit": 0.80, "gamma_physical": 0.40, "delta_gdp": 0.90,
         "carbon_vol": 0.20, "physical_vol": 0.15, "gdp_vol": 0.04, "spread_sensitivity": 1.00,
-        "ghg_p25": 0.8, "ghg_p50": 1.4, "ghg_p75": 2.6, "energy_p50": 60, "energy_p75": 95,
+        "ghg_p25": 50.0, "ghg_p50": 100.0, "ghg_p75": 200.0, "energy_p50": 60, "energy_p75": 95,
         "confidence": "Medium", "basis": "Generic diversified-manufacturing fallback; override for sub-sector."
     },
 }
@@ -1010,6 +1010,39 @@ def gaussian_copula_pd(pd_t, pd_p, rho):
     pd_p = np.clip(pd_p, 1e-6, 1-1e-6)
     z_t  = norm.ppf(pd_t); z_p = norm.ppf(pd_p)
     return float(np.clip(multivariate_normal.cdf([z_t, z_p], [0,0], [[1,rho],[rho,1]]), 0, 1))
+
+def combined_pd_union(pd_t, pd_p, rho):
+    """Combined default probability using union logic.
+    Gaussian copula gives the joint intersection probability P(T ∩ P).
+    Integrated borrower PD should represent P(T ∪ P), not only the intersection.
+    """
+    pd_t = float(np.clip(pd_t or 0.0, PD_FLOOR, PD_CAP))
+    pd_p = float(np.clip(pd_p or 0.0, 0.0, PD_CAP))
+    if pd_p <= 0:
+        return pd_t, 0.0
+    joint_intersection = gaussian_copula_pd(pd_t, pd_p, rho)
+    pd_union = pd_t + pd_p - joint_intersection
+    return float(np.clip(pd_union, max(pd_t, pd_p, PD_FLOOR), PD_CAP)), float(joint_intersection)
+
+def brsr_governance_multiplier(brsr_pd_adj, max_multiplier=1.20):
+    """Convert BRSR basis-point signal into a bounded governance multiplier.
+    Avoids adding BRSR as a third independent default block and reduces double counting.
+    """
+    if brsr_pd_adj is None or brsr_pd_adj <= 0:
+        return 1.0
+    return float(np.clip(1.0 + (float(brsr_pd_adj) / 0.015) * (max_multiplier - 1.0), 1.0, max_multiplier))
+
+def ecl_cr(pd, lgd, ead_cr):
+    """Expected credit loss in ₹ Cr. EAD inputs in this app are already ₹ Cr, so no /1000 conversion."""
+    return float(np.clip(pd, 0, 1) * np.clip(lgd, 0, 1) * max(float(ead_cr), 0.0))
+
+def scenario_weighted_peak(df, metric, scenario_col="Scenario"):
+    if not isinstance(df, pd.DataFrame) or df.empty or metric not in df.columns or scenario_col not in df.columns:
+        return None
+    grp = df.groupby(scenario_col)[metric].max()
+    weights = {s: SCENARIO_WEIGHTS.get(s, 1.0) for s in grp.index}
+    total = sum(weights.values()) or 1.0
+    return float(sum(grp[s] * weights[s] / total for s in grp.index))
 
 def simulate_carbon_price_path(start, years, drift=0.05, vol=0.25):
     prices = [start]
@@ -1371,7 +1404,9 @@ if any_ran:
             ps_x = st.session_state.get("phys_summary", {})
             if ps_x:
                 df_sum_data.append({"Metric":"Physical Risk PD","Value":f"{ps_x.get('Physical Risk PD',0):.4f}"})
+                df_sum_data.append({"Metric":"Physical ECL (₹ Cr)","Value":f"{ps_x.get('Physical ECL (₹ Cr)',0):.2f}"})
                 df_sum_data.append({"Metric":"Physical ΔECL (₹ Cr)","Value":f"{ps_x.get('ΔECL (₹ Cr)',0):.2f}"})
+                df_sum_data.append({"Metric":"Physical Asset Revenue Coverage (%)","Value":f"{ps_x.get('Asset Revenue Coverage %',0):.1f}"})
         if st.session_state.get("brsr_ran"):
             df_sum_data.append({"Metric":"BRSR Governance Signal (bps)","Value":f"{st.session_state.get('brsr_pd_adj',0)*10000:.1f}"})
         if st.session_state.get("mc_results"):
@@ -1590,6 +1625,9 @@ def run_transition_engine(df_long, selected_scenarios, revenue_0, ebitda_margin_
             revenue *= (1+price_elasticity*(net_carbon_cost/max(revenue_0,1)))  # FIX-03
             physical_loss = temp_sensitivity*max(0,temp-baseline_temp)
             revenue *= (1-physical_loss)
+            revenue_floor = max(revenue_0 * 0.05, 1.0)
+            business_non_viable = revenue < revenue_floor
+            revenue = max(revenue, revenue_floor)
             t_idx = max(0,y-2025)
             margin_t   = max(margin_floor,ebitda_margin_0*(1-margin_erosion_rate*t_idx))
             ebitda     = revenue*margin_t - net_carbon_cost
@@ -1602,8 +1640,10 @@ def run_transition_engine(df_long, selected_scenarios, revenue_0, ebitda_margin_
             dscr_gap = np.clip(1.5-dscr,-4.0,6.0)
             logit_pd = logit(base_pd)+alpha_dscr*dscr_gap+beta_carbon_credit*carbon_burden
             pd_t = np.clip(sigmoid(logit_pd),PD_FLOOR,PD_CAP)
+            if business_non_viable:
+                pd_t = PD_CAP
             lgd_t = np.clip(LGD_0*(1+0.2*carbon_burden+LGD_PHYSICAL_MULTIPLIER*physical_loss),0,1)
-            ecl   = pd_t*lgd_t*exposure_at_default/1e3
+            ecl   = ecl_cr(pd_t, lgd_t, exposure_at_default)
             ratio = 0 if carbon_price_adj<P_START else min((carbon_price_adj-P_START)/(P_FULL-P_START),1)
             stranded = high_carbon_assets*min(ratio,MAX_STRANDING)
             req_capex = (scope1+scope2)*abatement_potential*abatement_cost/1e7
@@ -1612,7 +1652,7 @@ def run_transition_engine(df_long, selected_scenarios, revenue_0, ebitda_margin_
                 "EBITDA_Margin":ebitda_adj/max(revenue,1),"Carbon_Burden":carbon_burden,
                 "DSCR":dscr,"PD_Transition":pd_t,"LGD":lgd_t,"ECL_Transition":ecl,
                 "Stranded_Assets":stranded,"CAPEX_Gap":capex_gap,
-                "Physical_Loss":physical_loss,"GDP_Shock":gdp_shock,"Carbon_Price_Adj":carbon_price_adj})
+                "Physical_Loss":physical_loss,"GDP_Shock":gdp_shock,"Carbon_Price_Adj":carbon_price_adj,"Business_NonViable":business_non_viable})
     df = pd.DataFrame(results)
     if df.empty: raise ValueError("Transition engine produced no outputs.")
     return df.sort_values(["Scenario","Year"]).reset_index(drop=True)
@@ -1637,14 +1677,14 @@ def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_rev
         total_ebitda_cr, interest_cr, baseline_pd, lgd, ead_cr, gamma_phys=0.5,
         dscr_sensitivity=1.0, pd_floor=0.0005, pd_cap=0.35):
     """
-    PHYS-01: IPCC AR6 damage function replaces flat 1+0.25*ΔT
+    PHYS-01: Illustrative physical damage multiplier replaces flat 1+0.25*ΔT
     damage_mult = 1 + 0.20·ΔT + 0.04·ΔT²
     P10/P90 uncertainty: σ = 0.08·ΔT
     """
     records = []
     for _, row in df_ngfs_temp.iterrows():
         dt = row["Delta_T_vs_Baseline"]
-        # IPCC AR6 non-linear damage (replaces 0.25*dt)
+        # Illustrative non-linear physical damage multiplier (replaces 0.25*dt)
         dm       = 1.0 + 0.20*dt + 0.04*dt**2
         sigma    = 0.08*dt
         dm_p10   = max(1.0, dm-1.645*sigma)
@@ -1658,7 +1698,7 @@ def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_rev
         dscr_gap = np.clip(1.5-dscr_p,-4.0,6.0)  # FIX-04 signed
         logit_p  = logit(baseline_pd)+dscr_sensitivity*dscr_gap+gamma_phys*baseline_damage_index
         pd_p     = np.clip(sigmoid(logit_p),pd_floor,pd_cap)
-        ecl_p    = pd_p*lgd*ead_cr/1e3
+        ecl_p    = ecl_cr(pd_p, lgd, ead_cr)
         chronic  = min(0.7,dt/3.0)
         records.append({
             "Scenario":row["Scenario"],"Year":int(row["Year"]),
@@ -2048,7 +2088,7 @@ with transition_tab:
 # ============================================================
 with physical_tab:
     st.markdown(f"<h2 style='color:{C['white']}'>🌍 Physical Risk Engine</h2>",unsafe_allow_html=True)
-    st.caption("Asset-level GIS-based physical risk with NGFS-aligned temperature pathways and IPCC AR6 damage functions")
+    st.caption("Asset-level GIS-based physical risk with NGFS-aligned temperature pathways and transparent physical damage assumptions")
 
     if not st.session_state.get("enable_physical",False):
         st.info("Enable **Physical Risk** in the sidebar.")
@@ -2105,7 +2145,10 @@ with physical_tab:
                         raise RuntimeError(RASTERIO_IMPORT_ERROR or "rasterio unavailable")
                     with rasterio.open(r"Data/floodMapGL_rp100y.tif") as src:
                         pk=max(abs(src.res[0])*111, 1e-6)
-                        bp=max(1, int(5/pk))
+                        # Copernicus floodMapGL cell values are water depth in metres.
+                        # Use a local p90 depth inside an approx. 1 km window instead of max over 5 km,
+                        # because max over large buffers can pick extreme neighbouring river cells.
+                        bp=max(1, int(1/pk))
                         for _,a in df.iterrows():
                             try:
                                 ri,ci=rowcol(src.transform,a["longitude"],a["latitude"])
@@ -2117,7 +2160,7 @@ with physical_tab:
                                 w=src.read(1, window=win, masked=True)
                                 v=w.compressed() if hasattr(w, "compressed") else w.ravel()
                                 v=v[(v>0)&(v<100)]
-                                flood_vals.append(float(v.max()) if v.size else 0.0)
+                                flood_vals.append(float(np.percentile(v, 90)) if v.size else 0.0)
                             except Exception:
                                 flood_vals.append(0.0)
                 except Exception as e:
@@ -2179,10 +2222,15 @@ with physical_tab:
                 DELTA_EBITDA=TOTAL_REV_LOSS*EBITDA_MARGIN_PHYS
                 DSCR_PHYS_BASE=(TOTAL_EBITDA-DELTA_EBITDA)/max(INTEREST_PHYS,1e-6)
                 df["PD_Physical"]=(df["base_pd"]*(1+gamma_phys*df["D_total"])).clip(0,1)
-                df["ECL_asset"]=df["PD_Physical"]*df["lgd"]*EAD_PHYS/max(len(df),1)
-                PD_PHYS=df["PD_Physical"].mean(); DELTA_ECL=df["ECL_asset"].sum()/1e3
+                revenue_weight = df["revenue_inr_cr"] / max(df["revenue_inr_cr"].sum(), 1e-6)
+                df["EAD_allocated_cr"] = EAD_PHYS * revenue_weight
+                df["Baseline_ECL_asset"] = df["base_pd"] * df["lgd"] * df["EAD_allocated_cr"]
+                df["ECL_asset"] = df["PD_Physical"] * df["lgd"] * df["EAD_allocated_cr"]
+                df["Delta_ECL_asset"] = (df["ECL_asset"] - df["Baseline_ECL_asset"]).clip(lower=0)
+                PD_PHYS=float((df["PD_Physical"]*revenue_weight).sum())
+                PHYSICAL_ECL=df["ECL_asset"].sum(); DELTA_ECL=df["Delta_ECL_asset"].sum()
 
-            # NGFS projection (PHYS-01: IPCC damage function)
+            # NGFS projection (PHYS-01: transparent illustrative physical damage multiplier)
             df_ngfs_temp = extract_ngfs_temperature_path(df_long,phys_scenarios,BASELINE_SCENARIO,phys_years)
             df_phys_proj = project_physical_risk_ngfs(
                 df_ngfs_temp,df["D_total"].mean(),TOTAL_REV_LOSS,TOTAL_EBITDA,INTEREST_PHYS,
@@ -2191,7 +2239,7 @@ with physical_tab:
             st.session_state["phys_assets"]=df
             st.session_state["phys_summary"]={"Total Revenue Loss (₹ Cr)":TOTAL_REV_LOSS,
                 "EBITDA Loss (₹ Cr)":DELTA_EBITDA,"Post-Risk DSCR":DSCR_PHYS_BASE,
-                "Physical Risk PD":PD_PHYS,"ΔECL (₹ Cr)":DELTA_ECL,"Assets Analysed":len(df)}
+                "Physical Risk PD":PD_PHYS,"Physical ECL (₹ Cr)":PHYSICAL_ECL,"ΔECL (₹ Cr)":DELTA_ECL,"Assets Analysed":len(df),"Asset Revenue Coverage %":df["revenue_inr_cr"].sum()/max(revenue_0,1e-6)*100}
             st.session_state["df_physical_projection"]=df_phys_proj
             st.session_state["physical_ran"]=True
             st.success("✅ Physical Risk Engine v1.2 executed")
@@ -2221,9 +2269,13 @@ with physical_tab:
 
             # Revenue loss stacked bar
             st.subheader("💸 Revenue Loss by Hazard")
-            df["rl_flood"]  =df["revenue_loss"]*df["H_flood"]  /(df["D_total"].replace(0,1)*1/KAPPA["flood"])
-            df["rl_heat"]   =df["revenue_loss"]*df["H_heat"]   /(df["D_total"].replace(0,1)*1/KAPPA["heat"])
-            df["rl_cyclone"]=df["revenue_loss"]*df["H_cyclone"]/(df["D_total"].replace(0,1)*1/KAPPA["cyclone"])
+            df["w_flood"] = df["H_flood"] * V["flood"] * KAPPA["flood"]
+            df["w_heat"] = df["H_heat"] * V["heat"] * KAPPA["heat"]
+            df["w_cyclone"] = df["H_cyclone"] * V["cyclone"] * KAPPA["cyclone"]
+            total_w = (df["w_flood"] + df["w_heat"] + df["w_cyclone"]).replace(0, np.nan)
+            df["rl_flood"] = (df["revenue_loss"] * df["w_flood"] / total_w).fillna(0)
+            df["rl_heat"] = (df["revenue_loss"] * df["w_heat"] / total_w).fillna(0)
+            df["rl_cyclone"] = (df["revenue_loss"] * df["w_cyclone"] / total_w).fillna(0)
             fig_rev=go.Figure()
             for haz,col,clr in [("rl_flood","Flood",C["accent3"]),("rl_heat","Heat",C["amber"]),("rl_cyclone","Cyclone",C["coral"])]:
                 if haz in df.columns:
@@ -2235,7 +2287,7 @@ with physical_tab:
             if not df_phys_proj.empty:
                 scope_badge("multi", "Forward-looking physical-risk projection across the same scenario years as transition risk")
                 st.subheader("🌡️ NGFS Physical Risk Projections")
-                st.caption("Revenue loss under each NGFS scenario · IPCC AR6 damage function · P10/P50/P90 uncertainty")
+                st.caption("Revenue loss under each NGFS scenario · illustrative damage multiplier · P10/P50/P90 uncertainty")
                 tabs_scen = st.tabs(sorted(df_phys_proj["Scenario"].unique()))
                 for tab_s,scen in zip(tabs_scen,sorted(df_phys_proj["Scenario"].unique())):
                     with tab_s:
@@ -2372,7 +2424,7 @@ with targets_tab:
                     else: em,rv,mr=l_em,l_rev,l_mar
                     rt=row["Revenue"]*(1+rv/100); mt=row["EBITDA_Margin"]*(1+mr/100)
                     pt=np.clip(row["PD_Transition"]*(1-em/100),0,1)
-                    et=pt*row["LGD"]*exposure_at_default/1e3
+                    et=ecl_cr(pt, row["LGD"], exposure_at_default)
                     return pd.Series({"Revenue_Target":rt,"EBITDA_Target":rt*mt,"PD_Target":pt,"ECL_Target":et})
                 df_tgt=pd.concat([df_base[["Scenario","Year"]],df_base.apply(apply_t,axis=1)],axis=1).reset_index(drop=True)
                 st.session_state["df_target"]=df_tgt; st.session_state["targets_ran"]=True
@@ -2513,24 +2565,27 @@ with integrated_tab:
                 if not rows.empty: pd_phys_scen=float(rows["PD_Physical"].iloc[0])
         if pd_phys_scen is not None: pd_phys_scen=float(np.clip(pd_phys_scen,0,1))
 
-        # Gaussian copula integration
+        # Integrated borrower PD: use union probability, not only joint/intersection probability.
         pd_copula=None
+        joint_intersection_pd=0.0
         if exec_mode=="combined" and pd_trans is not None and pd_phys_scen is not None:
-            pd_copula=gaussian_copula_pd(pd_trans,pd_phys_scen,correlation)
+            pd_copula, joint_intersection_pd = combined_pd_union(pd_trans, pd_phys_scen, correlation)
         elif transition_ran_i and pd_trans is not None:
             pd_copula=pd_trans
         elif pd_phys_scen is not None:
             pd_copula=pd_phys_scen
 
-        # Add BRSR overlay (additive, capped at PD_CAP)
-        pd_integrated=float(np.clip(pd_copula+brsr_pd_adj,PD_FLOOR,PD_CAP)) if pd_copula is not None else None
-        ecl_integrated=(ecl_trans or 0)+(ecl_phys or 0)
+        EAD=float(exposure_at_default)
+        # Apply BRSR as bounded governance multiplier to reduce double-counting.
+        brsr_mult = brsr_governance_multiplier(brsr_pd_adj)
+        pd_integrated=float(np.clip(pd_copula*brsr_mult,PD_FLOOR,PD_CAP)) if pd_copula is not None else None
+        lgd_integrated = float(np.clip(max(LGD_0, float(df_ti["LGD"].max()) if transition_ran_i and isinstance(df_ti, pd.DataFrame) and not df_ti.empty else LGD_0), 0, 1))
+        ecl_integrated=ecl_cr(pd_integrated, lgd_integrated, EAD) if pd_integrated is not None else 0
         dscr_integrated=min(d for d in [dscr_trans,dscr_phys] if d is not None) if any(d is not None for d in [dscr_trans,dscr_phys]) else None
 
         if pd_integrated is None:
             st.warning("Integrated PD could not be computed. Check module results.")
 
-        EAD=float(exposure_at_default)
         ecl_ead_ratio=ecl_integrated/EAD if EAD>0 else 0
 
         # Risk score (0-100)
@@ -2553,21 +2608,21 @@ with integrated_tab:
             <div style="font-size:18px;font-weight:700;color:{rag_color};">{rag_text}</div>
             <div style="font-size:13px;color:{C['slate']};margin-top:3px;">
               Integrated Risk Score: {risk_score_int}/100 · PD: {pd_integrated:.2%} · ECL/EAD: {ecl_ead_ratio:.2%}
-              {f' · BRSR overlay: +{brsr_pd_adj*10000:.0f}bps' if brsr_ran_i and brsr_pd_adj>0 else ''}
+              {f' · BRSR factor: ×{brsr_mult:.2f}' if brsr_ran_i and brsr_pd_adj>0 else ''}
             </div>
           </div>
         </div>""",unsafe_allow_html=True)
 
         # KPI grid
         ik1,ik2,ik3,ik4,ik5=st.columns(5)
-        ik1.metric("Integrated PD",f"{pd_integrated:.2%}",help="Gaussian copula + BRSR overlay")
+        ik1.metric("Integrated PD",f"{pd_integrated:.2%}",help="Union-style combined PD × bounded BRSR governance factor")
         ik2.metric("Integrated ECL",f"₹{ecl_integrated:,.1f} Cr")
         ik3.metric("ECL / EAD",f"{ecl_ead_ratio:.2%}")
         ik4.metric("Min DSCR",f"{dscr_integrated:.2f}×" if dscr_integrated else "—")
         ik5.metric("Risk Score",f"{risk_score_int}/100")
 
         if brsr_ran_i and brsr_pd_adj>0:
-            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>BRSR governance quality has been incorporated as a bounded overlay in the integrated risk score.</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='color:{C['slate']};font-size:12px;margin-top:4px;'>BRSR governance quality has been incorporated as a bounded multiplier in the integrated risk score.</div>", unsafe_allow_html=True)
 
         st.divider()
 
@@ -2579,7 +2634,7 @@ with integrated_tab:
             if transition_ran_i and ecl_trans: sources.append("Transition"); values.append(ecl_trans)
             if exec_mode in ["physical_only","combined"] and ecl_phys: sources.append("Physical"); values.append(ecl_phys)
             if brsr_ran_i and brsr_pd_adj>0:
-                brsr_ecl_equiv=brsr_pd_adj*LGD_0*EAD/1e3; sources.append("BRSR Operational"); values.append(brsr_ecl_equiv)
+                brsr_ecl_equiv=max(pd_integrated-(pd_copula or 0),0)*lgd_integrated*EAD; sources.append("BRSR Operational"); values.append(brsr_ecl_equiv)
             if sources:
                 fig_dec=go.Figure(go.Pie(labels=sources,values=values,
                     hole=0.45,marker=dict(colors=[C["accent2"],C["coral"],C["purple"]][:len(sources)]),
@@ -2637,11 +2692,11 @@ with integrated_tab:
         # ── ISSB S2 SUMMARY TABLE ──
         st.subheader("📋 ISSB S2–Aligned Integrated Summary")
         df_isummary=pd.DataFrame([
-            {"Metric":"Integrated PD (Copula + BRSR)","Value":f"{pd_integrated:.4f}","ISSB S2":"§15(a)"},
+            {"Metric":"Integrated PD (Union PD × BRSR factor)","Value":f"{pd_integrated:.4f}","ISSB S2":"§15(a)"},
             {"Metric":"Integrated ECL (₹ Cr)","Value":f"{ecl_integrated:.2f}","ISSB S2":"§15(b)"},
             {"Metric":"Post-Stress DSCR","Value":f"{dscr_integrated:.2f}" if dscr_integrated else "—","ISSB S2":"§15(c)"},
             {"Metric":"ECL / EAD","Value":f"{ecl_ead_ratio:.4f}","ISSB S2":"§16"},
-            {"Metric":"BRSR Governance Signal (bps)","Value":f"{brsr_pd_adj*10000:.1f}","ISSB S2":"§15(a) operational"},
+            {"Metric":"BRSR Governance Factor","Value":f"x{brsr_mult:.3f}","ISSB S2":"§15(a) operational"},
             {"Metric":"Capital Stress Signal","Value":capital_signal,"ISSB S2":"§16"},
             {"Metric":"Integrated Risk Score (0–100)","Value":f"{risk_score_int}","ISSB S2":"§14–16"},
             {"Metric":"Stranded Assets (₹ Cr)","Value":f"{stranded_t:.0f}" if stranded_t else "—","ISSB S2":"§22"},
@@ -2682,9 +2737,9 @@ with integrated_tab:
                 pt=np.clip(sigmoid(lp),PD_FLOOR,PD_CAP)
                 pp=np.clip(pd_phys_scen*(1+pds),0,1) if physical_ran_i and pd_phys_scen else 0
                 pj=gaussian_copula_pd(pt,pp,correlation) if physical_ran_i else pt
-                pj=float(np.clip(pj+brsr_pd_adj,PD_FLOOR,PD_CAP))
+                pj=float(np.clip(pj*brsr_governance_multiplier(brsr_pd_adj),PD_FLOOR,PD_CAP))
                 lj=np.clip(LGD_0*(1+0.2*cbu+LGD_PHYSICAL_MULTIPLIER*pds),0,1)
-                pd_sim.append(pj); ecl_sim.append(pj*lj*EAD/1e3)
+                pd_sim.append(pj); ecl_sim.append(ecl_cr(pj, lj, EAD))
 
             pd_sim=np.array(pd_sim); ecl_sim=np.array(ecl_sim)
             pd_mean=pd_sim.mean(); pd_95=np.percentile(pd_sim,95)
@@ -3319,7 +3374,7 @@ with brsr_tab:
                     ic1,ic2,ic3=st.columns(3)
                     ic1.metric("Base Transition PD",f"{pd_pk:.2%}")
                     ic2.metric("BRSR Governance Signal",f"+{pd_adj*10000:.0f} bps")
-                    ic3.metric("Total PD (Transition + BRSR)",f"{min(pd_pk+pd_adj,PD_CAP):.2%}",delta=f"+{pd_adj*10000:.0f}bps",delta_color="inverse")
+                    ic3.metric("Total PD (Transition × BRSR factor)",f"{min(pd_pk*brsr_governance_multiplier(pd_adj),PD_CAP):.2%}",delta=f"+{pd_adj*10000:.0f}bps",delta_color="inverse")
                     st.caption("BRSR overlay is additive operational climate risk premium. Captures risks outside carbon-price transmission chain: water scarcity, energy cost escalation, governance deficiencies, regulatory non-compliance penalties.")
 
             st.success("✅ BRSR Enhanced Diagnostics v1.2 completed")
