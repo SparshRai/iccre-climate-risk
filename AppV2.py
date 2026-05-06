@@ -10,9 +10,9 @@ MODEL_HASH        = "ICCRE_demo_public_v1_1"
 # ============================================================
 PRODUCT_TAGLINE  = "India's first quantitative climate-to-credit engine"
 PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-ready · INR-denominated"
-CONTACT_EMAIL    = "hello@iccre.in"
-PRODUCT_URL      = "https://iccre.in"
-LINKEDIN_URL     = "https://linkedin.com/company/iccre"
+CONTACT_EMAIL    = "Ankitrai410@gmail.com"
+PRODUCT_URL      = ""
+LINKEDIN_URL     = ""
 MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
 MODEL_CONFIDENCE_DEFAULT = "Medium — assumption-led, scenario-consistent, not borrower-calibrated"
 # Public demo defaults for more conservative, market-ready interpretation.
