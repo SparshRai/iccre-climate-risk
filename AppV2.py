@@ -107,7 +107,7 @@ DEMO_DATASET = {
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os, json
+import os, json, base64
 import urllib.request
 from groq import Groq
 from math import radians, sin, cos, asin, sqrt
@@ -140,27 +140,66 @@ RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 
 # ============================================================
-# STREAMLIT CHART KEY GUARD
+# STREAMLIT CHART KEY GUARD — DEMO-1.4
 # ============================================================
-# Streamlit 1.5x can raise StreamlitDuplicateElementId when identical
-# Plotly figures are rendered in cached views, repeated tabs, or reruns
-# without explicit keys. This wrapper adds a unique deterministic key
-# when the caller has not provided one, while preserving all explicit keys.
-_ORIGINAL_ST_PLOTLY_CHART = st.plotly_chart
+# Streamlit can raise StreamlitDuplicateElementKey/Id when the same Plotly
+# chart is rendered more than once in tabs, loops, cached result blocks or reruns.
+# This wrapper gives every plotly_chart call a unique per-session key.
+#
+# It also avoids the recursive monkey-patch problem from earlier builds by
+# unwrapping any previous _safe_plotly_chart wrapper back to the original
+# Streamlit plotly_chart method before installing the new wrapper.
+def _unwrap_streamlit_plotly_chart(fn):
+    seen = set()
+    while callable(fn) and getattr(fn, "__name__", "") == "_safe_plotly_chart" and id(fn) not in seen:
+        seen.add(id(fn))
+        # Newer safe wrappers store the original as an attribute.
+        original = getattr(fn, "_iccre_original_plotly_chart", None)
+        if callable(original) and original is not fn:
+            fn = original
+            continue
+        # Older safe wrappers captured the original in a closure.
+        closure = getattr(fn, "__closure__", None) or []
+        found = None
+        for cell in closure:
+            try:
+                obj = cell.cell_contents
+            except Exception:
+                continue
+            if callable(obj) and obj is not fn and getattr(obj, "__name__", "") in {"plotly_chart", "_safe_plotly_chart"}:
+                found = obj
+                break
+        if callable(found) and found is not fn:
+            fn = found
+        else:
+            break
+    return fn
+
+_ICCRE_ORIGINAL_ST_PLOTLY_CHART = _unwrap_streamlit_plotly_chart(st.plotly_chart)
 
 def _safe_plotly_chart(fig, *args, **kwargs):
-    if "key" not in kwargs or kwargs.get("key") is None:
-        _n = st.session_state.get("_plotly_auto_key_counter", 0) + 1
-        st.session_state["_plotly_auto_key_counter"] = _n
+    _n = st.session_state.get("_iccre_plotly_key_counter", 0) + 1
+    st.session_state["_iccre_plotly_key_counter"] = _n
+
+    base_key = kwargs.get("key")
+    if base_key is None:
         title = "chart"
         try:
-            title = str(fig.layout.title.text or "chart")[:40]
+            title = str(fig.layout.title.text or "chart")[:50]
         except Exception:
             pass
-        safe_title = "".join(ch if ch.isalnum() else "_" for ch in title).strip("_")[:40] or "chart"
-        kwargs["key"] = f"auto_plotly_{safe_title}_{_n}"
-    return _ORIGINAL_ST_PLOTLY_CHART(fig, *args, **kwargs)
+        base_key = "auto_" + "".join(ch if ch.isalnum() else "_" for ch in title).strip("_")[:50]
+    else:
+        base_key = str(base_key)
 
+    safe_base = "".join(ch if ch.isalnum() else "_" for ch in base_key).strip("_")[:70] or "plotly"
+    # Always append a per-session counter. This also fixes duplicate explicit keys
+    # inside scenario loops, tab loops, and cached renderers.
+    kwargs["key"] = f"{safe_base}_{_n}"
+    return _ICCRE_ORIGINAL_ST_PLOTLY_CHART(fig, *args, **kwargs)
+
+_safe_plotly_chart._iccre_safe_plotly_wrapper = True
+_safe_plotly_chart._iccre_original_plotly_chart = _ICCRE_ORIGINAL_ST_PLOTLY_CHART
 st.plotly_chart = _safe_plotly_chart
 
 # ============================================================
@@ -1104,11 +1143,100 @@ def _valid_email(value: str) -> bool:
     return "@" in value and "." in value.split("@")[-1]
 
 
+def _csv_line_for_lead(row: dict, columns: list[str]) -> str:
+    """Create one safe CSV line for GitHub/local append without adding pandas dependency at runtime."""
+    import csv, io
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writerow({k: row.get(k, "") for k in columns})
+    return buf.getvalue()
+
+
+def _append_lead_to_github_csv(row: dict):
+    """Append demo lead to a CSV file in GitHub when repository secrets are configured.
+
+    Required Streamlit Secrets / env vars:
+      GITHUB_TOKEN       = GitHub fine-grained token with Contents: Read/Write
+      GITHUB_REPO        = owner/repo, e.g. yourname/iccre-climate-risk
+    Optional:
+      GITHUB_BRANCH      = branch name, default main
+      GITHUB_LEADS_PATH  = file path in repo, default Data/demo_leads.csv
+
+    If these are not configured or the GitHub API call fails, the app continues
+    and still stores the lead locally in Data/demo_leads.csv.
+    """
+    token = _secret_or_env("GITHUB_TOKEN")
+    repo = _secret_or_env("GITHUB_REPO")
+    if not token or not repo:
+        return False
+
+    branch = _secret_or_env("GITHUB_BRANCH", "main")
+    path = _secret_or_env("GITHUB_LEADS_PATH", "Data/demo_leads.csv")
+    api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "ICCRE-Demo-Lead-Capture",
+    }
+
+    columns = [
+        "captured_at_utc", "name", "email", "organisation", "role",
+        "purpose", "notes", "demo_company", "model_version"
+    ]
+
+    try:
+        # Read current file if it exists.
+        get_req = urllib.request.Request(f"{api_url}?ref={branch}", headers=headers, method="GET")
+        sha = None
+        existing = ""
+        try:
+            with urllib.request.urlopen(get_req, timeout=8) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                sha = payload.get("sha")
+                content_b64 = payload.get("content", "")
+                existing = base64.b64decode(content_b64).decode("utf-8") if content_b64 else ""
+        except Exception:
+            # File does not exist or cannot be read; create it with header.
+            existing = ""
+            sha = None
+
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        if not existing.strip():
+            existing = ",".join(columns) + "\n"
+        existing += _csv_line_for_lead(row, columns)
+
+        body = {
+            "message": f"Add ICCRE demo lead - {row.get('email', 'unknown')}",
+            "content": base64.b64encode(existing.encode("utf-8")).decode("utf-8"),
+            "branch": branch,
+        }
+        if sha:
+            body["sha"] = sha
+
+        put_req = urllib.request.Request(
+            api_url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={**headers, "Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(put_req, timeout=10):
+            return True
+    except Exception:
+        return False
+
+
 def _save_demo_lead(lead: dict):
-    """Save user lead locally and optionally forward to a webhook."""
+    """Save user lead locally, optionally commit to GitHub, and optionally forward to a webhook."""
     os.makedirs("Data", exist_ok=True)
     row = {**lead, "captured_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}
     pd.DataFrame([row]).to_csv(DEMO_ACCESS_FILE, mode="a", header=not DEMO_ACCESS_FILE.exists(), index=False)
+
+    # Optional persistent storage in your GitHub repository.
+    # Configure GITHUB_TOKEN + GITHUB_REPO in Streamlit Secrets to enable.
+    github_saved = _append_lead_to_github_csv(row)
+    st.session_state["lead_saved_to_github"] = bool(github_saved)
 
     webhook = _secret_or_env("LEADS_WEBHOOK_URL")
     if webhook:
@@ -1563,6 +1691,10 @@ st.sidebar.markdown(f"""
 lead = st.session_state.get("demo_lead", {})
 if lead:
     st.sidebar.caption(f"Access: {lead.get('email','')}")
+    if st.session_state.get("lead_saved_to_github"):
+        st.sidebar.caption("Lead storage: GitHub ✓")
+    else:
+        st.sidebar.caption("Lead storage: local CSV")
 
 clear_demo = st.sidebar.button("↻ Reset Demo Results", width="stretch", help="Clears all saved demo outputs. Results otherwise remain available while you switch tabs.")
 if clear_demo:
