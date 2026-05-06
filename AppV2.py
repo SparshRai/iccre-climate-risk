@@ -432,6 +432,155 @@ def clean_scenario_legend(fig, orientation="h"):
     )
     return fig
 
+
+# ============================================================
+# PERSISTENT DEMO OUTPUT RENDERERS
+# These make tab outputs remain visible after tab switches/reruns.
+# Results are cleared only by the sidebar Reset Demo Results button.
+# ============================================================
+def render_cached_transition_results():
+    df_transition = st.session_state.get("df_transition")
+    if not isinstance(df_transition, pd.DataFrame) or df_transition.empty:
+        return False
+    scope_badge("multi", "Saved transition results are retained until Reset Demo Results is clicked.")
+    df_sum = (df_transition.groupby("Scenario").agg({
+        "Carbon_Burden":"max","EBITDA_Margin":"min","DSCR":"min",
+        "PD_Transition":"max","ECL_Transition":"max",
+        "Stranded_Assets":"max","CAPEX_Gap":"max",
+    }).round(4).reset_index())
+    st.markdown(f"<h3 style='color:{C['white']};margin-top:16px;'>Scenario Risk Summary</h3>", unsafe_allow_html=True)
+    def _color_pd(val):
+        if isinstance(val, float):
+            if val > 0.10: return f"color:{C['coral']};font-weight:600"
+            if val > 0.05: return f"color:{C['amber']};font-weight:600"
+            return f"color:{C['mint']};font-weight:600"
+        return ""
+    st.dataframe(
+        df_sum.style
+            .format({"Carbon_Burden":"{:.2%}","EBITDA_Margin":"{:.2%}","DSCR":"{:.2f}",
+                     "PD_Transition":"{:.3%}","ECL_Transition":"{:.1f}",
+                     "Stranded_Assets":"{:.0f}","CAPEX_Gap":"{:.0f}"})
+            .map(_color_pd, subset=["PD_Transition"])
+            .background_gradient(subset=["ECL_Transition"], cmap="Reds")
+            .set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
+        width="stretch", hide_index=True
+    )
+    render_metric_grid([
+        {"title":"Peak Transition PD", "value":_fmt_pct(df_transition['PD_Transition'].max()), "subtitle":"Highest PD across selected scenarios and years", "accent":C["accent2"], "scope":"Saved multi-year scenario"},
+        {"title":"Peak ECL", "value":_fmt_money_cr(df_transition['ECL_Transition'].max()), "subtitle":"Maximum expected credit loss across scenario path", "accent":C["amber"], "scope":"Saved multi-year scenario"},
+        {"title":"Minimum DSCR", "value":_fmt_num(df_transition['DSCR'].min(), "×", 2), "subtitle":"Worst debt-service capacity across scenario path", "accent":C["coral"] if df_transition['DSCR'].min()<1.2 else C["mint"], "scope":"Saved multi-year scenario"},
+        {"title":"Peak Stranded Assets", "value":_fmt_money_cr(df_transition['Stranded_Assets'].max(), 0), "subtitle":"Maximum high-carbon asset risk", "accent":C["purple"], "scope":"Saved multi-year scenario"},
+    ], columns=4)
+    fig_pd = go.Figure()
+    for scen in df_transition["Scenario"].unique():
+        ds = df_transition[df_transition["Scenario"] == scen]
+        fig_pd.add_trace(go.Scatter(x=ds["Year"], y=ds["PD_Transition"], mode="lines+markers",
+                                    name=scen[:30], line=dict(color=_scen_color(scen), width=2.5), marker=dict(size=6)))
+    fig_pd.update_layout(**_chart_layout("PD Trajectory by NGFS Scenario", 320))
+    fig_pd.update_yaxes(tickformat=".1%")
+    _ax_style(fig_pd)
+    st.plotly_chart(fig_pd, width="stretch")
+    fig_ecl = go.Figure()
+    for scen in df_transition["Scenario"].unique():
+        ds = df_transition[df_transition["Scenario"] == scen]
+        fig_ecl.add_trace(go.Bar(x=ds["Year"], y=ds["ECL_Transition"], name=scen[:30], marker_color=_scen_color(scen), opacity=0.85))
+    fig_ecl.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr) — All Scenarios", 300), barmode="group")
+    _ax_style(fig_ecl)
+    st.plotly_chart(fig_ecl, width="stretch")
+    return True
+
+
+def render_cached_physical_results():
+    ps = st.session_state.get("phys_summary")
+    df = st.session_state.get("phys_assets")
+    df_phys_proj = st.session_state.get("df_physical_projection")
+    if not isinstance(ps, dict) or not isinstance(df, pd.DataFrame) or df.empty:
+        return False
+    scope_badge("single", f"Saved physical-risk results for reporting year {REPORTING_YEAR}. Retained until Reset Demo Results is clicked.")
+    render_metric_grid([
+        {"title":"Total Revenue Loss", "value":_fmt_money_cr(ps.get('Total Revenue Loss (₹ Cr)',0)), "subtitle":"Estimated annual loss from asset downtime", "accent":C["amber"], "scope":"Saved reporting year"},
+        {"title":"EBITDA Impact", "value":_fmt_money_cr(ps.get('EBITDA Loss (₹ Cr)',0)), "subtitle":"Revenue loss translated into EBITDA impact", "accent":C["coral"], "scope":"Saved reporting year"},
+        {"title":"Post-Risk DSCR", "value":_fmt_num(ps.get('Post-Risk DSCR',0), "×", 2), "subtitle":"Debt service capacity after physical-risk shock", "accent":C["mint"] if float(ps.get('Post-Risk DSCR',0))>=1.2 else C["coral"], "scope":"Saved reporting year"},
+        {"title":"Physical Risk PD", "value":_fmt_pct(ps.get('Physical Risk PD',0)), "subtitle":"Portfolio average physical-risk adjusted PD", "accent":C["accent2"], "scope":"Saved reporting year"},
+        {"title":"ΔECL", "value":_fmt_money_cr(ps.get('ΔECL (₹ Cr)',0), 2), "subtitle":"Incremental expected credit loss", "accent":C["purple"], "scope":"Saved reporting year"},
+        {"title":"Physical EAD Used", "value":_fmt_money_cr(ps.get('Effective Physical EAD (₹ Cr)',0), 1), "subtitle":str(ps.get('Physical EAD Allocation Mode','Demo allocation')), "accent":C["mint"], "scope":"Saved reporting year"},
+    ], columns=3)
+    st.subheader("🗺️ Asset Vulnerability Heatmap")
+    score_map={"H_flood":"Flood","H_heat":"Heat","H_cyclone":"Cyclone"}
+    cols=[c for c in score_map if c in df.columns]
+    if cols:
+        hm=df.set_index("asset_id")[cols].rename(columns={k:v for k,v in score_map.items() if k in cols})*100
+        fig_hm=go.Figure(go.Heatmap(z=hm.values.T,x=hm.index.tolist(),y=hm.columns.tolist(),
+            colorscale=[[0,C["mint"]],[0.3,C["amber"]],[0.6,"#F97316"],[1.0,C["coral"]]],
+            text=[[f"{v:.0f}" for v in row] for row in hm.values.T],texttemplate="%{text}",
+            colorbar=dict(title="Risk Score"),zmin=0,zmax=100))
+        fig_hm.update_layout(**_chart_layout("Hazard Vulnerability Scores by Asset (0=none, 100=max)",max(220,len(df)*45+80)))
+        _ax_style(fig_hm)
+        st.plotly_chart(fig_hm,width="stretch")
+    if isinstance(df_phys_proj, pd.DataFrame) and not df_phys_proj.empty:
+        scope_badge("multi", "Saved forward-looking physical-risk projection across NGFS scenario years.")
+        fig_pd_p = go.Figure()
+        for scen in sorted(df_phys_proj["Scenario"].unique()):
+            ds = df_phys_proj[df_phys_proj["Scenario"]==scen].sort_values("Year")
+            fig_pd_p.add_trace(go.Scatter(x=ds["Year"], y=ds["PD_Physical"], mode="lines+markers", name=scen[:28],
+                                           line=dict(color=_scen_color(scen), width=2.5), marker=dict(size=7)))
+        fig_pd_p.update_layout(**_chart_layout("Physical PD — NGFS Scenario Projections", 280))
+        fig_pd_p.update_yaxes(tickformat=".2%")
+        _ax_style(fig_pd_p)
+        st.plotly_chart(fig_pd_p, width="stretch")
+    return True
+
+
+def render_cached_brsr_results():
+    bs = st.session_state.get("brsr_summary")
+    bf = st.session_state.get("brsr_flags")
+    if not isinstance(bs, pd.DataFrame) or bs.empty:
+        return False
+    row = bs.iloc[0]
+    pd_adj = st.session_state.get("brsr_pd_adj", 0.0)
+    risk_score = float(row.get("Overall_Risk_Score", 0))
+    readiness = float(row.get("Readiness_Score", 0))
+    sev_color = C["mint"] if risk_score < 30 else C["amber"] if risk_score < 60 else C["coral"]
+    st.markdown(f"""
+    <div style="background:{C['card']};border:1px solid {sev_color};border-radius:10px;padding:14px 18px;margin-bottom:12px;">
+      <div style="font-size:16px;font-weight:700;color:{sev_color};">Saved BRSR Operational Climate Risk · Score: {risk_score:.0f}/100</div>
+      <div style="font-size:13px;color:{C['slate']};margin-top:2px;">Governance signal: +{pd_adj*10000:.0f}bps · Readiness: {readiness:.0f}% · Results retained until Reset Demo Results is clicked.</div>
+    </div>""", unsafe_allow_html=True)
+    render_metric_grid([
+        {"title":"Risk Score", "value":f"{risk_score:.0f}/100", "subtitle":"BRSR operational risk", "accent":sev_color, "scope":"Saved reporting year"},
+        {"title":"BRSR Readiness", "value":f"{readiness:.0f}%", "subtitle":"SEBI BRSR Core readiness proxy", "accent":C["accent2"], "scope":"Saved reporting year"},
+        {"title":"Governance Signal", "value":f"+{pd_adj*10000:.0f} bps", "subtitle":"Converted to bounded governance factor in integrated risk", "accent":C["purple"], "scope":"Saved reporting year"},
+        {"title":"Water Cost Risk", "value":_fmt_money_cr(row.get('Water_Cost_Risk_Cr',0), 1), "subtitle":"5-year operational cost signal", "accent":C["amber"], "scope":"Saved reporting year"},
+    ], columns=4)
+    if isinstance(bf, pd.DataFrame) and not bf.empty:
+        st.subheader("Active BRSR Flags")
+        st.dataframe(bf, width="stretch", hide_index=True)
+    return True
+
+
+def render_cached_targets_results():
+    eff = st.session_state.get("df_target_effect")
+    df_tgt = st.session_state.get("df_target")
+    if not isinstance(eff, pd.DataFrame) or eff.empty:
+        return False
+    scope_badge("multi", "Saved transition target scenario results are retained until Reset Demo Results is clicked.")
+    st.markdown(f"<h4 style='color:{C['accent2']};'>Saved Financial Target Effectiveness</h4>", unsafe_allow_html=True)
+    st.dataframe(eff.style.format({"PD_Target_Max":"{:.3%}","PD_Base_Max":"{:.3%}","PD_Reduction_%":"{:.1f}%"})
+        .background_gradient(subset=["PD_Reduction_%"],cmap="Greens"), width="stretch", hide_index=True)
+    df_base = st.session_state.get("df_transition")
+    if isinstance(df_base, pd.DataFrame) and isinstance(df_tgt, pd.DataFrame):
+        df_plot=df_base.merge(df_tgt,on=["Scenario","Year"],how="inner")
+        fig_tgt=go.Figure()
+        for scen in df_plot["Scenario"].unique():
+            ds=df_plot[df_plot["Scenario"]==scen]; clr=_scen_color(scen)
+            fig_tgt.add_trace(go.Scatter(x=ds["Year"],y=ds["PD_Transition"],mode="lines",name=f"{scen[:20]} Base",line=dict(dash="dash",color=clr,width=1.5)))
+            fig_tgt.add_trace(go.Scatter(x=ds["Year"],y=ds["PD_Target"],mode="lines+markers",name=f"{scen[:20]} Target",line=dict(color=clr,width=2.5),marker=dict(size=6)))
+        fig_tgt.update_layout(**_chart_layout("PD — Baseline vs Target", 340))
+        fig_tgt.update_yaxes(tickformat=".1%")
+        _ax_style(fig_tgt)
+        st.plotly_chart(fig_tgt, width="stretch")
+    return True
+
 # ============================================================
 # LOGGING
 # ============================================================
@@ -911,7 +1060,7 @@ def demo_access_gate():
         st.session_state["demo_lead"] = lead
         st.rerun()
 
-    st.info("After access, use the sidebar button **Run Full Demo** to populate all major outputs in one click.")
+    st.info("After access, open each tab and run the module you want to explore. Results stay saved until you click **Reset Demo Results**.")
     st.stop()
 
 
@@ -1254,11 +1403,7 @@ lead = st.session_state.get("demo_lead", {})
 if lead:
     st.sidebar.caption(f"Access: {lead.get('email','')}")
 
-run_full_demo = st.sidebar.button("▶ Run Full Demo", type="primary", width="stretch", help="Runs Transition, Physical, BRSR and Integrated summary for the locked demo company.")
-if run_full_demo:
-    st.session_state["run_full_demo_requested"] = True
-
-clear_demo = st.sidebar.button("↻ Reset Demo Results", width="stretch")
+clear_demo = st.sidebar.button("↻ Reset Demo Results", width="stretch", help="Clears all saved demo outputs. Results otherwise remain available while you switch tabs.")
 if clear_demo:
     _RESET_KEYS = [
         "transition_ran","physical_ran","targets_ran","brsr_ran","integrated_ran",
@@ -1279,10 +1424,11 @@ if clear_demo:
 with st.sidebar.expander("📋 How to use this demo", expanded=True):
     st.markdown(f"""
 <div style="font-size:11px;color:{C['off_white']};line-height:1.8;">
-1. Click <b>Run Full Demo</b> for a complete pre-loaded story<br>
+1. Run the module tab you want to explore<br>
 2. Open <b>Dashboard</b> for board-level summary<br>
 3. Explore <b>Transition</b>, <b>Physical</b>, <b>BRSR</b>, <b>Targets</b>, and <b>Integrated Risk</b><br>
-4. Use <b>Get Access</b> for custom company/portfolio analysis
+4. Results remain saved while switching tabs<br>
+5. Use <b>Reset Demo Results</b> only when you want to clear outputs
 </div>
 """, unsafe_allow_html=True)
 
@@ -1731,11 +1877,7 @@ def _run_full_public_demo():
     st.session_state["run_full_demo_requested"]=False
 
 
-if st.session_state.get("run_full_demo_requested"):
-    with st.spinner("Running full ICCRE public demo..."):
-        _run_full_public_demo()
-    st.success("Full demo results are ready. Open Dashboard or Integrated Risk to explore.")
-    st.rerun()
+# One-click full demo auto-run removed for public demo. Modules are run from their own tabs and cached until reset.
 
 # ============================================================
 # TAB LAYOUT
@@ -2012,7 +2154,8 @@ with transition_tab:
         run_btn = st.button("▶ Run Transition Risk Engine",type="primary")
 
         if not run_btn:
-            st.info("Select scenarios and click **Run Transition Risk Engine**.")
+            if not render_cached_transition_results():
+                st.info("Select scenarios and click **Run Transition Risk Engine**.")
         elif not selected_scenarios:
             st.warning("Select at least one scenario.")
         else:
@@ -2161,7 +2304,8 @@ with physical_tab:
 
         run_phys = st.button("▶ Run Physical Risk Engine",type="primary",key="run_phys_btn")
         if not run_phys:
-            st.info("Click **Run Physical Risk Engine** to proceed.")
+            if not render_cached_physical_results():
+                st.info("Click **Run Physical Risk Engine** to proceed.")
         else:
             df = asset_df.copy()
             V={"flood":0.6,"heat":0.7,"cyclone":0.6}; KAPPA={"flood":0.4,"heat":0.2,"cyclone":0.5}
@@ -2527,7 +2671,8 @@ with targets_tab:
                 if brsr_ran_t:
                     st.caption(f"**BRSR note:** Target renewable share {tgt_renewable}%, target coverage {tgt_coverage}%, target hazardous waste {tgt_hazwaste}%. These resolve {len(current_flags)-len(brsr_remaining_flags)} of {len(current_flags)} current BRSR flags, reducing risk overlay from +{current_brsr_pd*10000:.0f} bps to +{brsr_target_overlay*10000:.0f} bps. The dotted 'BRSR Target' line includes this reduction.")
             else:
-                st.info("Set targets above and click **Run Target Scenario**.")
+                if not render_cached_targets_results():
+                    st.info("Set targets above and click **Run Target Scenario**.")
 
 # ============================================================
 # TAB 4 — INTEGRATED RISK  (INT-01)
@@ -3242,7 +3387,8 @@ with brsr_tab:
 
         run_brsr=st.button("▶ Run BRSR Diagnostics",type="primary",key="run_brsr_btn")
         if not run_brsr:
-            st.info("Click Run BRSR Diagnostics to proceed.")
+            if not render_cached_brsr_results():
+                st.info("Click Run BRSR Diagnostics to proceed.")
         else:
 
             # ── COMPUTE ──
