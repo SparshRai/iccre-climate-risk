@@ -10,7 +10,7 @@ MODEL_HASH        = "ICCRE_demo_public_v1_6_github_leads"
 # ============================================================
 PRODUCT_TAGLINE  = "India's first quantitative climate-to-credit engine"
 PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-ready · INR-denominated"
-CONTACT_EMAIL    = "Ankitrai410@gmail.com"
+CONTACT_EMAIL    = "Ankitrai2193@gmail.com"
 PRODUCT_URL      = ""
 LINKEDIN_URL     = ""
 MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
@@ -182,7 +182,7 @@ def _plotly_chart_safe(fig, *args, **kwargs):
         base_key = str(base_key)
     safe_base = "".join(ch if ch.isalnum() else "_" for ch in base_key).strip("_")[:80] or "plotly"
     kwargs["key"] = f"{safe_base}_{_n}"
-    return _plotly_chart_safe(fig, *args, **kwargs)
+    return st.plotly_chart(fig, *args, **kwargs)
 
 
 def _secret_or_env(name: str, default=None):
