@@ -22,7 +22,7 @@ DEFAULT_PHYSICAL_EAD_MODE = "Company-wide proportional exposure"
 
 # ── Demo dataset: Bharat Steel Industries Ltd (fictional) ──
 # Pre-configured to produce visually compelling, realistic demo output.
-# PD jumps from 1.5% → 7.3% under Net Zero 2050. DSCR falls below 1.0x.
+# PD and DSCR stress are shown under the selected public scenarios.
 # Carbon burden 11.4% of revenue. ECL ₹394 Cr vs ₹81 Cr baseline.
 DEMO_DATASET = {
     "company_name":      "Bharat Steel Industries Ltd",
@@ -292,7 +292,9 @@ def _ax_style(fig, rows=1, cols=1):
 SCENARIO_COLORS = {
     "Current Policies":                               C["coral"],   # red-coral
     "Nationally Determined Contributions (NDCs)":     C["amber"],   # amber-yellow
-    "Net Zero 2050":                                  C["accent2"], # teal-cyan
+    "Below 2°C":                                      C["accent2"], # teal-cyan
+    "Below 2C":                                       C["accent2"],
+    "Below 2 Degrees":                                C["accent2"],
 }
 
 # Fallback palette for any extra / unrecognised scenarios — always distinguishable
@@ -318,6 +320,13 @@ def _scen_color(scen: str) -> str:
     if scen in SCENARIO_COLORS:
         return SCENARIO_COLORS[scen]
     # Partial-match against known names (handles truncated scenario strings)
+    scen_l = str(scen).lower()
+    if "current" in scen_l and "polic" in scen_l:
+        return C["coral"]
+    if "ndc" in scen_l or "nationally determined" in scen_l:
+        return C["amber"]
+    if "below" in scen_l and "2" in scen_l:
+        return C["accent2"]
     for k, v in SCENARIO_COLORS.items():
         if k in scen or scen in k:
             return v
@@ -465,11 +474,21 @@ def render_cached_transition_results():
             .set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
         width="stretch", hide_index=True
     )
+    df_ry, actual_ry = reporting_year_slice(df_transition, REPORTING_YEAR)
+    if isinstance(df_ry, pd.DataFrame) and not df_ry.empty:
+        ry_worst = df_ry.loc[df_ry["PD_Transition"].idxmax()]
+        scope_badge("single", f"Reporting-year snapshot: selected {REPORTING_YEAR}; displayed year {actual_ry}. Values show the worst selected scenario in that year.")
+        render_metric_grid([
+            {"title":f"{actual_ry} Worst-Scenario PD", "value":_fmt_pct(ry_worst['PD_Transition']), "subtitle":f"Scenario: {ry_worst['Scenario']}", "accent":C["accent2"], "scope":"Reporting year"},
+            {"title":f"{actual_ry} Worst-Scenario ECL", "value":_fmt_money_cr(ry_worst['ECL_Transition']), "subtitle":"Credit loss at reporting-year stress", "accent":C["amber"], "scope":"Reporting year"},
+            {"title":f"{actual_ry} DSCR", "value":_fmt_num(ry_worst['DSCR'], "×", 2), "subtitle":"Debt-service capacity in reporting year", "accent":C["coral"] if ry_worst['DSCR']<1.2 else C["mint"], "scope":"Reporting year"},
+        ], columns=3)
+    scope_badge("multi", "Multi-year scenario peak/worst values across all selected years.")
     render_metric_grid([
-        {"title":"Peak Transition PD", "value":_fmt_pct(df_transition['PD_Transition'].max()), "subtitle":"Highest PD across selected scenarios and years", "accent":C["accent2"], "scope":"Saved multi-year scenario"},
-        {"title":"Peak ECL", "value":_fmt_money_cr(df_transition['ECL_Transition'].max()), "subtitle":"Maximum expected credit loss across scenario path", "accent":C["amber"], "scope":"Saved multi-year scenario"},
-        {"title":"Minimum DSCR", "value":_fmt_num(df_transition['DSCR'].min(), "×", 2), "subtitle":"Worst debt-service capacity across scenario path", "accent":C["coral"] if df_transition['DSCR'].min()<1.2 else C["mint"], "scope":"Saved multi-year scenario"},
-        {"title":"Peak Stranded Assets", "value":_fmt_money_cr(df_transition['Stranded_Assets'].max(), 0), "subtitle":"Maximum high-carbon asset risk", "accent":C["purple"], "scope":"Saved multi-year scenario"},
+        {"title":"Peak Transition PD", "value":_fmt_pct(df_transition['PD_Transition'].max()), "subtitle":"Highest PD across selected scenarios and years", "accent":C["accent2"], "scope":"Multi-year scenario"},
+        {"title":"Peak ECL", "value":_fmt_money_cr(df_transition['ECL_Transition'].max()), "subtitle":"Maximum expected credit loss across scenario path", "accent":C["amber"], "scope":"Multi-year scenario"},
+        {"title":"Minimum DSCR", "value":_fmt_num(df_transition['DSCR'].min(), "×", 2), "subtitle":"Worst debt-service capacity across scenario path", "accent":C["coral"] if df_transition['DSCR'].min()<1.2 else C["mint"], "scope":"Multi-year scenario"},
+        {"title":"Peak Stranded Assets", "value":_fmt_money_cr(df_transition['Stranded_Assets'].max(), 0), "subtitle":"Maximum high-carbon asset risk", "accent":C["purple"], "scope":"Multi-year scenario"},
     ], columns=4)
     fig_pd = go.Figure()
     for scen in df_transition["Scenario"].unique():
@@ -496,7 +515,7 @@ def render_cached_physical_results():
     df_phys_proj = st.session_state.get("df_physical_projection")
     if not isinstance(ps, dict) or not isinstance(df, pd.DataFrame) or df.empty:
         return False
-    scope_badge("single", f"Saved physical-risk results for reporting year {REPORTING_YEAR}. Retained until Reset Demo Results is clicked.")
+    scope_badge("single", f"Saved physical-risk results for reporting year {ps.get('Reporting Year', REPORTING_YEAR)}. Retained until Reset Demo Results is clicked.")
     render_metric_grid([
         {"title":"Total Revenue Loss", "value":_fmt_money_cr(ps.get('Total Revenue Loss (₹ Cr)',0)), "subtitle":"Estimated annual loss from asset downtime", "accent":C["amber"], "scope":"Saved reporting year"},
         {"title":"EBITDA Impact", "value":_fmt_money_cr(ps.get('EBITDA Loss (₹ Cr)',0)), "subtitle":"Revenue loss translated into EBITDA impact", "accent":C["coral"], "scope":"Saved reporting year"},
@@ -1019,7 +1038,7 @@ def demo_access_gate():
       <div style="font-size:24px;font-weight:800;color:{C['white']};margin-bottom:6px;">Access ICCRE Public Demo</div>
       <div style="font-size:13px;color:{C['slate']};line-height:1.7;max-width:900px;">
         {PUBLIC_DEMO_NOTE}<br>
-        <b>Demo company:</b> Bharat Steel Industries Ltd · <b>Sector:</b> Steel · <b>Reporting year:</b> 2035
+        <b>Demo company:</b> Bharat Steel Industries Ltd · <b>Sector:</b> Steel · <b>Reporting year:</b> selectable after access
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1209,7 +1228,7 @@ SECTOR_CONTAGION = {
     "Steel":     {"Manufacturing": 0.18, "Cement": 0.10},
     "Oil & Gas": {"Power": 0.22, "Manufacturing": 0.15},
 }
-SCENARIO_WEIGHTS = {"Current Policies": 0.5, "Nationally Determined Contributions (NDCs)": 0.3, "Net Zero 2050": 0.2}
+SCENARIO_WEIGHTS = {"Current Policies": 0.50, "Nationally Determined Contributions (NDCs)": 0.30, "Below 2°C": 0.20}
 # Zero-cost production-readiness overlays. These are transparent management overlays,
 # not externally purchased/calibrated datasets.
 BRSR_MAX_GOVERNANCE_MULTIPLIER = 1.20
@@ -1221,7 +1240,7 @@ MODEL_LIMITATION_NOTE = (
 SCENARIO_REGISTRY = {
     "Current Policies": {"type": "Baseline", "temperature": "≈2.7°C", "policy_intensity": "Low"},
     "Nationally Determined Contributions (NDCs)": {"type": "Policy Transition", "temperature": "≈2.1°C", "policy_intensity": "Medium"},
-    "Net Zero 2050": {"type": "Disorderly Transition", "temperature": "≈1.5°C", "policy_intensity": "High"},
+    "Below 2°C": {"type": "Orderly / lower-temperature transition", "temperature": "≈1.7–2.0°C", "policy_intensity": "High"},
 }
 SECTOR_GHG_BENCHMARKS = {
     s: {"p25": v["ghg_p25"], "p50": v["ghg_p50"], "p75": v["ghg_p75"]}
@@ -1365,6 +1384,52 @@ df_long   = df_ngfs.melt(
 df_long["Year"] = df_long["Year"].astype(int)
 
 # ============================================================
+# PUBLIC DEMO SCENARIO FILTER
+# ============================================================
+# Public demo intentionally exposes only three scenario families:
+# 1) Current Policies, 2) NDCs, 3) Below 2°C.
+# The NGFS source file may use slightly different labels, so we resolve aliases robustly.
+PUBLIC_SCENARIO_FAMILIES = {
+    "Current Policies": ["current policies"],
+    "Nationally Determined Contributions (NDCs)": ["nationally determined contributions", "ndc"],
+    "Below 2°C": ["below 2", "below 2°", "below 2c", "below 2 c", "below 2 degree"],
+}
+
+def _match_public_scenario_name(name: str, aliases: list[str]) -> bool:
+    n = str(name).lower().replace("°", "").replace("degrees", "degree")
+    for alias in aliases:
+        a = alias.lower().replace("°", "").replace("degrees", "degree")
+        if a in n:
+            return True
+    return False
+
+def get_public_demo_scenarios(df):
+    available = sorted(df["Scenario"].dropna().astype(str).unique())
+    selected = []
+    for display, aliases in PUBLIC_SCENARIO_FAMILIES.items():
+        match = next((sc for sc in available if _match_public_scenario_name(sc, aliases)), None)
+        if match and match not in selected:
+            selected.append(match)
+    return selected
+
+PUBLIC_DEMO_SCENARIOS = get_public_demo_scenarios(df_long)
+if PUBLIC_DEMO_SCENARIOS:
+    df_long = df_long[df_long["Scenario"].isin(PUBLIC_DEMO_SCENARIOS)].copy()
+
+def _nearest_available_year(years, target_year):
+    vals = sorted(int(y) for y in set(years))
+    if not vals:
+        return int(target_year)
+    return min(vals, key=lambda yy: abs(yy-int(target_year)))
+
+def reporting_year_slice(df, reporting_year, year_col="Year"):
+    """Return rows for selected reporting year; if not available, use nearest scenario year."""
+    if not isinstance(df, pd.DataFrame) or df.empty or year_col not in df.columns:
+        return df, reporting_year
+    actual_year = _nearest_available_year(df[year_col].dropna().astype(int).unique(), int(reporting_year))
+    return df[df[year_col].astype(int) == int(actual_year)].copy(), actual_year
+
+# ============================================================
 # AI PARAMETER CALIBRATION
 # ============================================================
 def ai_calibrate_parameters(sector, *_):
@@ -1394,7 +1459,7 @@ st.sidebar.markdown(f"""
 st.sidebar.markdown(f"""
 <div style='background:{C['amber']}22;border:1px solid {C['amber']};border-radius:8px;padding:10px 12px;margin:8px 0;font-size:11px;line-height:1.55;'>
   <b style='color:{C['amber']};'>🔒 Demo company locked</b><br>
-  Bharat Steel Industries Ltd · Steel · Reporting Year 2035<br>
+  Bharat Steel Industries Ltd · Steel · Reporting Year selectable<br>
   Company inputs cannot be changed in this public demo.
 </div>
 """, unsafe_allow_html=True)
@@ -1439,7 +1504,17 @@ st.session_state["_demo_loaded"] = True
 
 company_name = DEMO_DATASET["company_name"]
 sector = DEMO_DATASET["sector"]
-REPORTING_YEAR = int(DEMO_DATASET["reporting_year"])
+
+_available_years = sorted(int(y) for y in df_long["Year"].dropna().unique())
+_default_reporting_year = int(DEMO_DATASET["reporting_year"])
+_default_reporting_year = _nearest_available_year(_available_years, _default_reporting_year)
+REPORTING_YEAR = int(st.sidebar.selectbox(
+    "Reporting Year",
+    options=_available_years,
+    index=_available_years.index(_default_reporting_year) if _default_reporting_year in _available_years else 0,
+    help="Select the reporting year for snapshot outputs. Scenario charts still show the full multi-year pathway.",
+    key="selected_reporting_year",
+))
 BASELINE_SCENARIO = "Current Policies"
 default_correlation = SECTOR_CORRELATION.get(sector, 0.30)
 
@@ -1494,6 +1569,7 @@ CLIMATE_DRIVER_COV = np.outer(CLIMATE_DRIVER_VOL,CLIMATE_DRIVER_VOL)*CLIMATE_DRI
 st.sidebar.markdown(f"""
 <div style='background:{C['card']};border:1px solid {C['bg_ocean']};border-radius:8px;padding:10px 12px;margin-top:12px;font-size:10px;line-height:1.7;color:{C['slate']};'>
 <b style='color:{C['accent2']};'>Demo inputs</b><br>
+Reporting Year: {REPORTING_YEAR}<br>
 Revenue: ₹{revenue_0:,.0f} Cr<br>
 EAD: ₹{exposure_at_default:,.0f} Cr<br>
 Emissions: {TOTAL_EMISSIONS/1e6:.1f} Mn tCO₂e<br>
@@ -1519,20 +1595,32 @@ if any_ran:
             "demo_note": "Public demo; fictional company; inputs locked.",
             "timestamp": datetime.utcnow().isoformat(),
         },
-        "headline_results": {},
+        "reporting_year_snapshot": {},
+        "multi_year_scenario_results": {},
         "model_use_note": MODEL_USE_NOTE,
     }
     if isinstance(st.session_state.get("df_transition"), pd.DataFrame) and not st.session_state["df_transition"].empty:
         _dt = st.session_state["df_transition"]
-        _export_payload["headline_results"].update({
+        _dt_ry, _actual_ry = reporting_year_slice(_dt, REPORTING_YEAR)
+        if isinstance(_dt_ry, pd.DataFrame) and not _dt_ry.empty:
+            _ry_worst = _dt_ry.loc[_dt_ry["PD_Transition"].idxmax()]
+            _export_payload["reporting_year_snapshot"].update({
+                "displayed_year": int(_actual_ry),
+                "worst_reporting_year_scenario": str(_ry_worst["Scenario"]),
+                "transition_pd": float(_ry_worst["PD_Transition"]),
+                "transition_ecl_cr": float(_ry_worst["ECL_Transition"]),
+                "dscr": float(_ry_worst["DSCR"]),
+                "carbon_burden": float(_ry_worst["Carbon_Burden"]),
+            })
+        _export_payload["multi_year_scenario_results"].update({
             "peak_transition_pd": float(_dt["PD_Transition"].max()),
             "peak_transition_ecl_cr": float(_dt["ECL_Transition"].max()),
             "worst_dscr": float(_dt["DSCR"].min()),
         })
     if isinstance(st.session_state.get("phys_summary"), dict):
-        _export_payload["headline_results"].update(st.session_state["phys_summary"])
+        _export_payload["reporting_year_snapshot"].update(st.session_state["phys_summary"])
     if st.session_state.get("brsr_ran"):
-        _export_payload["headline_results"]["brsr_governance_signal_bps"] = float(st.session_state.get("brsr_pd_adj",0)*10000)
+        _export_payload["reporting_year_snapshot"]["brsr_governance_signal_bps"] = float(st.session_state.get("brsr_pd_adj",0)*10000)
     if isinstance(st.session_state.get("df_integrated_summary"), pd.DataFrame):
         _export_payload["integrated_risk"] = st.session_state["df_integrated_summary"].to_dict("records")
 
@@ -1817,7 +1905,7 @@ def _run_full_public_demo():
     df_ngfs_temp = extract_ngfs_temperature_path(df_long, selected_scenarios, REPORTING_YEAR, sorted(df_transition["Year"].unique()))
     df_phys_proj = project_physical_risk_ngfs(df_ngfs_temp, df["D_total"].mean(), total_rev_loss, df["revenue_inr_cr"].sum()*ebitda_margin_0, interest_payment, pd_phys, LGD_0, effective_ead, gamma_phys)
     st.session_state["phys_assets"]=df
-    st.session_state["phys_summary"]={"Total Revenue Loss (₹ Cr)":total_rev_loss,"EBITDA Loss (₹ Cr)":delta_ebitda,"Post-Risk DSCR":dscr_phys,"Physical Risk PD":pd_phys,"Physical ECL (₹ Cr)":physical_ecl,"ΔECL (₹ Cr)":delta_ecl,"Assets Analysed":len(df),"Asset Revenue Coverage %":coverage*100,"Effective Physical EAD (₹ Cr)":effective_ead,"Physical EAD Allocation Mode":"Company-wide proportional exposure"}
+    st.session_state["phys_summary"]={"Total Revenue Loss (₹ Cr)":total_rev_loss,"EBITDA Loss (₹ Cr)":delta_ebitda,"Post-Risk DSCR":dscr_phys,"Physical Risk PD":pd_phys,"Physical ECL (₹ Cr)":physical_ecl,"ΔECL (₹ Cr)":delta_ecl,"Assets Analysed":len(df),"Asset Revenue Coverage %":coverage*100,"Effective Physical EAD (₹ Cr)":effective_ead,"Physical EAD Allocation Mode":"Company-wide proportional exposure", "Reporting Year": REPORTING_YEAR}
     st.session_state["df_physical_projection"]=df_phys_proj
     st.session_state["physical_ran"]=True
 
@@ -1841,7 +1929,7 @@ def _run_full_public_demo():
     esc_r={"Low":0.03,"Medium":0.08,"High":0.18}[water_stress_region]
     w_cum_cost=sum(total_water_m3*42*((1+esc_r)**yr-(1+esc_r)**(yr-1))/1e7 for yr in range(1,6))
     fossil_kwh=total_energy_kwh*(100-renewable_share_pct)/100; energy_tr_risk=fossil_kwh*2.0/1e7
-    rdness_items={"Renewable ≥20%":1.0 if renewable_share_pct>=20 else 0.5,"Target Coverage ≥50%":1.0,"Hazardous Waste ≤30%":1.0,"Water Risk Mgmt":0.0,"Scope 3 Disclosed":1.0,"Verified Data":0.0,"Board Oversight":0.0,"Net Zero Target":0.0}
+    rdness_items={"Renewable ≥20%":1.0 if renewable_share_pct>=20 else 0.5,"Target Coverage ≥50%":1.0,"Hazardous Waste ≤30%":1.0,"Water Risk Mgmt":0.0,"Scope 3 Disclosed":1.0,"Verified Data":0.0,"Board Oversight":0.0,"Long-term Climate Target":0.0}
     readiness_score=sum(rdness_items.values())/len(rdness_items)*100
     risk_score_brsr=12+18+7+8+6
     brsr_summary=pd.DataFrame([{"GHG_Intensity":round(ghg_int,3),"S1_Intensity":round(s1_int,3),"S2_Intensity":round(s2_int,3),"S3_Intensity":round(s3_int,3),"Energy_Intensity":round(en_int,3),"Renewable_%":renewable_share_pct,"Water_Intensity":round(wa_int,3),"Recycled_Water_%":recycled_water_pct,"Hazardous_Waste_%":hazardous_waste_pct,"Target_Coverage_%":target_coverage_pct,"BRSR_PD_Adj_bps":round(pd_adj*10000,1),"Water_Cost_Risk_Cr":round(w_cum_cost,2),"Energy_TR_Risk_Cr":round(energy_tr_risk,2),"Readiness_Score":round(readiness_score,1),"Overall_Risk_Score":risk_score_brsr}])
@@ -1967,9 +2055,9 @@ with dashboard_tab:
             <div style="font-size:11px;font-weight:700;color:{C['amber']};margin-bottom:8px;
                         text-transform:uppercase;letter-spacing:.06em;">⚡ Fastest Start — 3 Steps</div>
             <div style="font-size:12px;color:{C['off_white']};line-height:2.0;">
-              1️⃣ Click <strong style="color:{C['amber']};">🎬 Load Demo</strong> in the sidebar<br>
+              1️⃣ Select a <strong style="color:{C['amber']};">Reporting Year</strong> in the sidebar<br>
               2️⃣ Go to <strong style="color:{C['accent2']};">⚡ Transition Risk</strong> tab → Click Run<br>
-              3️⃣ See PD jump from 1.5% to 7.3% under Net Zero 2050
+              3️⃣ Compare reporting-year snapshot vs multi-year scenario pathway
             </div>
           </div>
           <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap;">
@@ -2019,11 +2107,24 @@ with dashboard_tab:
                 brsr_pd   = st.session_state.get("brsr_pd_adj",0)
                 risk_score = bs.iloc[0].get("Overall_Risk_Score",None)
 
+        # Reporting-year snapshot block for transition results
+        if transition_ran and isinstance(st.session_state.get("df_transition"), pd.DataFrame) and not st.session_state["df_transition"].empty:
+            _df_ry_dash, _actual_ry_dash = reporting_year_slice(st.session_state["df_transition"], REPORTING_YEAR)
+            if isinstance(_df_ry_dash, pd.DataFrame) and not _df_ry_dash.empty:
+                _ry_worst_dash = _df_ry_dash.loc[_df_ry_dash["PD_Transition"].idxmax()]
+                scope_badge("single", f"Dashboard reporting-year snapshot: selected {REPORTING_YEAR}; displayed year {_actual_ry_dash}.")
+                render_metric_grid([
+                    {"title":f"{_actual_ry_dash} Worst-Scenario PD", "value":_fmt_pct(_ry_worst_dash['PD_Transition']), "subtitle":f"Scenario: {_ry_worst_dash['Scenario']}", "accent":C["accent2"], "scope":"Reporting year"},
+                    {"title":f"{_actual_ry_dash} Worst-Scenario ECL", "value":_fmt_money_cr(_ry_worst_dash['ECL_Transition']), "subtitle":"Reporting-year credit-loss view", "accent":C["amber"], "scope":"Reporting year"},
+                    {"title":f"{_actual_ry_dash} DSCR", "value":_fmt_num(_ry_worst_dash['DSCR'], "×", 2), "subtitle":"Reporting-year debt-service capacity", "accent":C["coral"] if _ry_worst_dash['DSCR']<1.2 else C["mint"], "scope":"Reporting year"},
+                ], columns=3)
+                scope_badge("multi", "Dashboard peak cards below show multi-year scenario peak/worst values.")
+
         # KPI row
         kpis = []
-        if pd_t is not None:   kpis.append(("Transition PD",f"{pd_t:.2%}",C["accent2"],"Max across scenarios"))
-        if ecl_t is not None:  kpis.append(("Max ECL",f"₹{ecl_t:,.1f} Cr",C["amber"],"Expected credit loss"))
-        if dscr_t is not None: kpis.append(("Min DSCR",f"{dscr_t:.2f}×",C["coral"] if dscr_t<1.2 else C["mint"],"Debt service coverage"))
+        if pd_t is not None:   kpis.append(("Peak Transition PD",f"{pd_t:.2%}",C["accent2"],"Multi-year scenario peak"))
+        if ecl_t is not None:  kpis.append(("Peak ECL",f"₹{ecl_t:,.1f} Cr",C["amber"],"Multi-year scenario peak"))
+        if dscr_t is not None: kpis.append(("Worst DSCR",f"{dscr_t:.2f}×",C["coral"] if dscr_t<1.2 else C["mint"],"Multi-year scenario worst"))
         if pd_p is not None:   kpis.append(("Physical PD",f"{pd_p:.2%}",C["coral"],"Asset-level physical risk"))
         if brsr_pd is not None:kpis.append(("BRSR Governance Signal",f"+{brsr_pd*10000:.0f} bps",C["purple"],"Operational climate risk"))
         if stranded_t is not None: kpis.append(("Stranded Assets",f"₹{stranded_t:,.0f} Cr",C["amber"],"High-carbon asset risk"))
@@ -2149,8 +2250,14 @@ with transition_tab:
     else:
         # Public mode: internal correction notes hidden.
 
-        all_scenarios = sorted(df_long["Scenario"].unique())
-        selected_scenarios = st.multiselect("NGFS Scenarios",options=all_scenarios,default=all_scenarios)
+        all_scenarios = PUBLIC_DEMO_SCENARIOS if PUBLIC_DEMO_SCENARIOS else sorted(df_long["Scenario"].unique())
+        selected_scenarios = st.multiselect(
+            "Public Demo Scenarios",
+            options=all_scenarios,
+            default=all_scenarios,
+            help="Public demo is limited to Current Policies, NDCs and Below 2°C scenarios."
+        )
+        st.caption("Scenario outputs use only: Current Policies, NDCs and Below 2°C. No other NGFS scenarios are shown in this demo.")
         run_btn = st.button("▶ Run Transition Risk Engine",type="primary")
 
         if not run_btn:
@@ -2421,7 +2528,7 @@ with physical_tab:
             st.session_state["phys_assets"]=df
             st.session_state["phys_summary"]={"Total Revenue Loss (₹ Cr)":TOTAL_REV_LOSS,
                 "EBITDA Loss (₹ Cr)":DELTA_EBITDA,"Post-Risk DSCR":DSCR_PHYS_BASE,
-                "Physical Risk PD":PD_PHYS,"Physical ECL (₹ Cr)":PHYSICAL_ECL,"ΔECL (₹ Cr)":DELTA_ECL,"Assets Analysed":len(df),"Asset Revenue Coverage %":asset_revenue_coverage*100,"Effective Physical EAD (₹ Cr)":effective_ead_phys,"Physical EAD Allocation Mode":ead_allocation_mode}
+                "Physical Risk PD":PD_PHYS,"Physical ECL (₹ Cr)":PHYSICAL_ECL,"ΔECL (₹ Cr)":DELTA_ECL,"Assets Analysed":len(df),"Asset Revenue Coverage %":asset_revenue_coverage*100,"Effective Physical EAD (₹ Cr)":effective_ead_phys,"Physical EAD Allocation Mode":ead_allocation_mode, "Reporting Year": REPORTING_YEAR}
             st.session_state["df_physical_projection"]=df_phys_proj
             st.session_state["physical_ran"]=True
             st.success("✅ Physical Risk Engine v1.2 executed")
@@ -2568,7 +2675,7 @@ with targets_tab:
             with bc2:
                 st.markdown(f"<div style='color:{C['amber']};font-weight:600;margin-bottom:8px;'>Governance Commitments</div>",unsafe_allow_html=True)
                 tgt_board       = st.checkbox("Commit Board Climate Oversight", value=False, key="tgt_board")
-                tgt_netzero     = st.checkbox("Commit Net Zero / LT Target", value=False, key="tgt_nz")
+                tgt_netzero     = st.checkbox("Commit Long-term Climate Target", value=False, key="tgt_nz")
                 tgt_verified    = st.checkbox("Commit to Third-Party Verification", value=False, key="tgt_vd")
                 tgt_scope3      = st.checkbox("Commit Scope 3 Disclosure", value=True, key="tgt_s3")
 
@@ -2709,6 +2816,8 @@ with integrated_tab:
             else:
                 brsr_pd_adj = float(st.session_state.get("brsr_pd_adj", 0.0))
                 _brsr_label = "current"
+
+        scope_badge("multi", "Integrated risk results use multi-year scenario peak/worst transition stress, plus reporting-year physical/BRSR signals where available.")
 
         # Mode banner — all active layers now that _brsr_label is defined
         _layers = []
@@ -3356,7 +3465,7 @@ with brsr_tab:
         bg1,bg2,bg3,bg4=st.columns(4)
         has_scope3          =bg1.checkbox("Scope 3 Disclosed",value=True,key="brsr_s3")
         has_board_oversight =bg2.checkbox("Board Climate Oversight",value=False,key="brsr_bo")
-        has_net_zero_target =bg3.checkbox("Net Zero / LT Target",value=False,key="brsr_nz")
+        has_net_zero_target =bg3.checkbox("Long-term Climate Target",value=False,key="brsr_nz")
         has_cbam            =bg4.checkbox("EU/UK Export Exposure",value=False,key="brsr_cb")
 
         # Locked public demo: BRSR inputs are fixed to the fictional company case.
@@ -3435,7 +3544,7 @@ with brsr_tab:
                 "Scope 3 Disclosed":1.0 if has_scope3 else 0.0,
                 "Verified Data":1.0 if has_verified_data else 0.0,
                 "Board Oversight":1.0 if has_board_oversight else 0.0,
-                "Net Zero Target":1.0 if has_net_zero_target else 0.0,
+                "Long-term Climate Target":1.0 if has_net_zero_target else 0.0,
             }
             readiness_score=sum(rdness_items.values())/len(rdness_items)*100
 
@@ -3787,7 +3896,7 @@ STRUCTURE YOUR RESPONSE AS:
 State the single biggest financial threat in plain language with exact numbers.
 
 ## 📉 The Cascade — What Breaks First, Then Next
-Show the exact sequence: which metric hits the danger zone first, in which year, under which scenario. Use the year-by-year data. Be specific: "DSCR falls below covenant threshold of 1.2x in 2031 under Net Zero 2050, meaning the company cannot service ₹X Cr of debt without refinancing."
+Show the exact sequence: which metric hits the danger zone first, in which year, under which scenario. Use the year-by-year data. Be specific: "DSCR falls below covenant threshold of 1.2x in 2031 under Below 2°C, meaning the company cannot service ₹X Cr of debt without refinancing."
 
 ## 💣 The Three Landmines
 The three specific things that could trigger a sudden credit event (not gradual deterioration). What triggers them. What year. What the impact would be on the bank's ECL.
@@ -3956,7 +4065,7 @@ YOUR JOB: Tell the company exactly how equity markets and institutional investor
 STRUCTURE YOUR RESPONSE AS:
 
 ## 📊 Market Pricing of This Risk
-How are equity investors likely to discount the valuation given these climate metrics? Translate PD and ECL numbers into EV/EBITDA multiple impact. Be specific: "A PD increase from X% to Y% under Net Zero scenario typically leads institutional ESG analysts to apply a Z% discount to sector multiple."
+How are equity investors likely to discount the valuation given these climate metrics? Translate PD and ECL numbers into EV/EBITDA multiple impact. Be specific: "A PD increase from X% to Y% under Below 2°C scenario typically leads institutional ESG analysts to apply a Z% discount to sector multiple."
 
 ## 🔍 What ESG Analysts Will Flag in Their Reports
 The specific data points that trigger negative ESG analyst notes. For each: the metric, the threshold, the typical analyst language, the index exclusion risk.
