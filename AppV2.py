@@ -1,9 +1,9 @@
-MODEL_VERSION    = "DEMO-1.2"
+MODEL_VERSION    = "DEMO-1.6"
 PARAMETER_VERSION = "ClimateParams_v1.4_final_logic_corrected"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
 MODEL_BUILD_DATE  = "2026-05-06"
-MODEL_HASH        = "ICCRE_demo_public_v1_1"
+MODEL_HASH        = "ICCRE_demo_public_v1_6_github_leads"
 
 # ============================================================
 # PRODUCT & BRANDING
@@ -140,69 +140,6 @@ RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 
 # ============================================================
-# STREAMLIT CHART KEY GUARD — DEMO-1.4
-# ============================================================
-# Streamlit can raise StreamlitDuplicateElementKey/Id when the same Plotly
-# chart is rendered more than once in tabs, loops, cached result blocks or reruns.
-# This wrapper gives every plotly_chart call a unique per-session key.
-#
-# It also avoids the recursive monkey-patch problem from earlier builds by
-# unwrapping any previous _safe_plotly_chart wrapper back to the original
-# Streamlit plotly_chart method before installing the new wrapper.
-def _unwrap_streamlit_plotly_chart(fn):
-    seen = set()
-    while callable(fn) and getattr(fn, "__name__", "") == "_safe_plotly_chart" and id(fn) not in seen:
-        seen.add(id(fn))
-        # Newer safe wrappers store the original as an attribute.
-        original = getattr(fn, "_iccre_original_plotly_chart", None)
-        if callable(original) and original is not fn:
-            fn = original
-            continue
-        # Older safe wrappers captured the original in a closure.
-        closure = getattr(fn, "__closure__", None) or []
-        found = None
-        for cell in closure:
-            try:
-                obj = cell.cell_contents
-            except Exception:
-                continue
-            if callable(obj) and obj is not fn and getattr(obj, "__name__", "") in {"plotly_chart", "_safe_plotly_chart"}:
-                found = obj
-                break
-        if callable(found) and found is not fn:
-            fn = found
-        else:
-            break
-    return fn
-
-_ICCRE_ORIGINAL_ST_PLOTLY_CHART = _unwrap_streamlit_plotly_chart(st.plotly_chart)
-
-def _safe_plotly_chart(fig, *args, **kwargs):
-    _n = st.session_state.get("_iccre_plotly_key_counter", 0) + 1
-    st.session_state["_iccre_plotly_key_counter"] = _n
-
-    base_key = kwargs.get("key")
-    if base_key is None:
-        title = "chart"
-        try:
-            title = str(fig.layout.title.text or "chart")[:50]
-        except Exception:
-            pass
-        base_key = "auto_" + "".join(ch if ch.isalnum() else "_" for ch in title).strip("_")[:50]
-    else:
-        base_key = str(base_key)
-
-    safe_base = "".join(ch if ch.isalnum() else "_" for ch in base_key).strip("_")[:70] or "plotly"
-    # Always append a per-session counter. This also fixes duplicate explicit keys
-    # inside scenario loops, tab loops, and cached renderers.
-    kwargs["key"] = f"{safe_base}_{_n}"
-    return _ICCRE_ORIGINAL_ST_PLOTLY_CHART(fig, *args, **kwargs)
-
-_safe_plotly_chart._iccre_safe_plotly_wrapper = True
-_safe_plotly_chart._iccre_original_plotly_chart = _ICCRE_ORIGINAL_ST_PLOTLY_CHART
-st.plotly_chart = _safe_plotly_chart
-
-# ============================================================
 # PAGE CONFIG — must be the first Streamlit UI command
 # ============================================================
 st.set_page_config(
@@ -221,6 +158,31 @@ st.set_page_config(
         ),
     },
 )
+
+
+def _plotly_chart_safe(fig, *args, **kwargs):
+    """Render Plotly charts with a guaranteed unique Streamlit key.
+
+    This avoids StreamlitDuplicateElementId and StreamlitDuplicateElementKey
+    errors when charts are rendered inside tabs, loops, cached-result blocks,
+    or reruns. It does not monkey-patch Streamlit, so it avoids recursive
+    wrapper failures.
+    """
+    _n = st.session_state.get("_iccre_plotly_key_counter", 0) + 1
+    st.session_state["_iccre_plotly_key_counter"] = _n
+    base_key = kwargs.pop("key", None)
+    if base_key is None:
+        title = "chart"
+        try:
+            title = str(fig.layout.title.text or "chart")[:60]
+        except Exception:
+            pass
+        base_key = "auto_" + "".join(ch if ch.isalnum() else "_" for ch in title).strip("_")
+    else:
+        base_key = str(base_key)
+    safe_base = "".join(ch if ch.isalnum() else "_" for ch in base_key).strip("_")[:80] or "plotly"
+    kwargs["key"] = f"{safe_base}_{_n}"
+    return _plotly_chart_safe(fig, *args, **kwargs)
 
 
 def _secret_or_env(name: str, default=None):
@@ -598,14 +560,14 @@ def render_cached_transition_results():
     fig_pd.update_layout(**_chart_layout("PD Trajectory by NGFS Scenario", 320))
     fig_pd.update_yaxes(tickformat=".1%")
     _ax_style(fig_pd)
-    st.plotly_chart(fig_pd, width="stretch", key="iccre_plot_562")
+    _plotly_chart_safe(fig_pd, width="stretch", key="iccre_plot_562")
     fig_ecl = go.Figure()
     for scen in df_transition["Scenario"].unique():
         ds = df_transition[df_transition["Scenario"] == scen]
         fig_ecl.add_trace(go.Bar(x=ds["Year"], y=ds["ECL_Transition"], name=scen[:30], marker_color=_scen_color(scen), opacity=0.85))
     fig_ecl.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr) — All Scenarios", 300), barmode="group")
     _ax_style(fig_ecl)
-    st.plotly_chart(fig_ecl, width="stretch", key="iccre_plot_569")
+    _plotly_chart_safe(fig_ecl, width="stretch", key="iccre_plot_569")
     return True
 
 
@@ -635,7 +597,7 @@ def render_cached_physical_results():
             colorbar=dict(title="Risk Score"),zmin=0,zmax=100))
         fig_hm.update_layout(**_chart_layout("Hazard Vulnerability Scores by Asset (0=none, 100=max)",max(220,len(df)*45+80)))
         _ax_style(fig_hm)
-        st.plotly_chart(fig_hm,width="stretch", key="iccre_plot_599")
+        _plotly_chart_safe(fig_hm,width="stretch", key="iccre_plot_599")
     if isinstance(df_phys_proj, pd.DataFrame) and not df_phys_proj.empty:
         scope_badge("multi", "Saved forward-looking physical-risk projection across NGFS scenario years.")
         fig_pd_p = go.Figure()
@@ -646,7 +608,7 @@ def render_cached_physical_results():
         fig_pd_p.update_layout(**_chart_layout("Physical PD — NGFS Scenario Projections", 280))
         fig_pd_p.update_yaxes(tickformat=".2%")
         _ax_style(fig_pd_p)
-        st.plotly_chart(fig_pd_p, width="stretch", key="iccre_plot_610")
+        _plotly_chart_safe(fig_pd_p, width="stretch", key="iccre_plot_610")
     return True
 
 
@@ -697,7 +659,7 @@ def render_cached_targets_results():
         fig_tgt.update_layout(**_chart_layout("PD — Baseline vs Target", 340))
         fig_tgt.update_yaxes(tickformat=".1%")
         _ax_style(fig_tgt)
-        st.plotly_chart(fig_tgt, width="stretch", key="iccre_plot_661")
+        _plotly_chart_safe(fig_tgt, width="stretch", key="iccre_plot_661")
     return True
 
 # ============================================================
@@ -1166,7 +1128,9 @@ def _append_lead_to_github_csv(row: dict):
     and still stores the lead locally in Data/demo_leads.csv.
     """
     token = _secret_or_env("GITHUB_TOKEN")
-    repo = _secret_or_env("GITHUB_REPO")
+    # Default repository is intentionally not displayed anywhere in the user interface.
+    # Override with GITHUB_REPO in Streamlit Secrets if needed.
+    repo = _secret_or_env("GITHUB_REPO", base64.b64decode("U3BhcnNoUmFpL2ljY3JlLWNsaW1hdGUtcmlzaw==").decode("utf-8"))
     if not token or not repo:
         return False
 
@@ -1691,10 +1655,6 @@ st.sidebar.markdown(f"""
 lead = st.session_state.get("demo_lead", {})
 if lead:
     st.sidebar.caption(f"Access: {lead.get('email','')}")
-    if st.session_state.get("lead_saved_to_github"):
-        st.sidebar.caption("Lead storage: GitHub ✓")
-    else:
-        st.sidebar.caption("Lead storage: local CSV")
 
 clear_demo = st.sidebar.button("↻ Reset Demo Results", width="stretch", help="Clears all saved demo outputs. Results otherwise remain available while you switch tabs.")
 if clear_demo:
@@ -2394,7 +2354,7 @@ with dashboard_tab:
                 fig_spark.update_layout(**_chart_layout("Transition PD Trajectory — All Scenarios",260))
                 fig_spark.update_yaxes(tickformat=".1%")
                 _ax_style(fig_spark)
-                st.plotly_chart(fig_spark,width="stretch", key="iccre_plot_2265")
+                _plotly_chart_safe(fig_spark,width="stretch", key="iccre_plot_2265")
 
             with col_gauge:
                 if pd_t is not None:
@@ -2418,7 +2378,7 @@ with dashboard_tab:
                         title={"text":"Peak PD","font":{"color":C["slate"],"size":12}}
                     ))
                     fig_g.update_layout(height=200,paper_bgcolor=C["bg_dark"],margin=dict(l=10,r=10,t=30,b=10))
-                    st.plotly_chart(fig_g,width="stretch", key="iccre_plot_2289")
+                    _plotly_chart_safe(fig_g,width="stretch", key="iccre_plot_2289")
 
         # BRSR + Physical summary row
         if brsr_ran or physical_ran:
@@ -2566,7 +2526,7 @@ with transition_tab:
             fig_pd.update_layout(**_chart_layout("PD Trajectory by NGFS Scenario",320))
             fig_pd.update_yaxes(tickformat=".1%")
             _ax_style(fig_pd)
-            st.plotly_chart(fig_pd,width="stretch", key="iccre_plot_2437")
+            _plotly_chart_safe(fig_pd,width="stretch", key="iccre_plot_2437")
 
             fig_ecl = go.Figure()
             for scen in df_transition["Scenario"].unique():
@@ -2575,7 +2535,7 @@ with transition_tab:
                     marker_color=_scen_color(scen),opacity=0.85))
             fig_ecl.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr) — All Scenarios",300),barmode="group")
             _ax_style(fig_ecl)
-            st.plotly_chart(fig_ecl,width="stretch", key="iccre_plot_2446")
+            _plotly_chart_safe(fig_ecl,width="stretch", key="iccre_plot_2446")
 
             fig_dscr = go.Figure()
             for scen in df_transition["Scenario"].unique():
@@ -2588,7 +2548,7 @@ with transition_tab:
                 annotation_text="1.5× threshold",annotation_font_color=C["amber"])
             fig_dscr.update_layout(**_chart_layout("DSCR Stress Trajectory",300))
             _ax_style(fig_dscr)
-            st.plotly_chart(fig_dscr,width="stretch", key="iccre_plot_2459")
+            _plotly_chart_safe(fig_dscr,width="stretch", key="iccre_plot_2459")
 
             st.success("✅ Transition Risk Engine v1.1 executed")
             log_model_run("Transition",{"company":company_name,"sector":sector,
@@ -2794,7 +2754,7 @@ with physical_tab:
                 colorbar=dict(title="Risk Score"),zmin=0,zmax=100))
             fig_hm.update_layout(**_chart_layout("Hazard Vulnerability Scores by Asset (0=none, 100=max)",max(220,len(df)*45+80)))
             _ax_style(fig_hm)
-            st.plotly_chart(fig_hm,width="stretch", key="iccre_plot_2665")
+            _plotly_chart_safe(fig_hm,width="stretch", key="iccre_plot_2665")
 
             # Revenue loss stacked bar
             st.subheader("💸 Revenue Loss by Hazard")
@@ -2810,7 +2770,7 @@ with physical_tab:
                 if haz in df.columns:
                     fig_rev.add_trace(go.Bar(x=df["asset_id"],y=df[haz].fillna(0),name=col,marker_color=clr))
             fig_rev.update_layout(**_chart_layout("Revenue Loss Decomposition by Hazard (₹ Cr)",300),barmode="stack")
-            _ax_style(fig_rev); st.plotly_chart(fig_rev,width="stretch", key="iccre_plot_2681")
+            _ax_style(fig_rev); _plotly_chart_safe(fig_rev,width="stretch", key="iccre_plot_2681")
 
             # NGFS scenario fan charts (PHYS-01)
             if not df_phys_proj.empty:
@@ -2839,7 +2799,7 @@ with physical_tab:
                         fig_f.add_trace(go.Bar(x=ds["Year"],y=ds["Chronic_Loss_Cr"],name="Chronic",marker_color=C["accent3"]),row=2,col=2)
                         fig_f.add_trace(go.Bar(x=ds["Year"],y=ds["Acute_Loss_Cr"],name="Acute",marker_color=C["coral"]),row=2,col=2)
                         fig_f.update_layout(**_chart_layout(f"{scen} — Physical Risk Projections",480),barmode="stack")
-                        _ax_style(fig_f,rows=2,cols=2); st.plotly_chart(fig_f,width="stretch", key="iccre_plot_2710")
+                        _ax_style(fig_f,rows=2,cols=2); _plotly_chart_safe(fig_f,width="stretch", key="iccre_plot_2710")
                         wr=ds.loc[ds["PD_Physical"].idxmax()]
                         c1p,c2p,c3p,c4p=st.columns(4)
                         c1p.metric("Worst Year",f"{int(wr['Year'])}"); c2p.metric("Peak Rev Loss",f"₹{wr['Revenue_Loss_P50_Cr']:.1f} Cr")
@@ -2990,7 +2950,7 @@ with targets_tab:
                         fig_brsr_tgt.update_layout(**_chart_layout("BRSR Governance Signal Reduction (bps)", 260),
                             yaxis_title="Basis Points")
                         _ax_style(fig_brsr_tgt)
-                        st.plotly_chart(fig_brsr_tgt, width="stretch", key="iccre_plot_2861")
+                        _plotly_chart_safe(fig_brsr_tgt, width="stretch", key="iccre_plot_2861")
 
                 # Baseline vs target PD chart
                 df_plot=df_base.merge(df_tgt,on=["Scenario","Year"],how="inner")
@@ -3012,7 +2972,7 @@ with targets_tab:
                 fig_tgt.update_layout(**_chart_layout("PD — Baseline vs Financial Target vs Integrated (+ BRSR) Target", 340))
                 fig_tgt.update_yaxes(tickformat=".1%")
                 _ax_style(fig_tgt)
-                st.plotly_chart(fig_tgt, width="stretch", key="iccre_plot_2883")
+                _plotly_chart_safe(fig_tgt, width="stretch", key="iccre_plot_2883")
 
                 if brsr_ran_t:
                     st.caption(f"**BRSR note:** Target renewable share {tgt_renewable}%, target coverage {tgt_coverage}%, target hazardous waste {tgt_hazwaste}%. These resolve {len(current_flags)-len(brsr_remaining_flags)} of {len(current_flags)} current BRSR flags, reducing risk overlay from +{current_brsr_pd*10000:.0f} bps to +{brsr_target_overlay*10000:.0f} bps. The dotted 'BRSR Target' line includes this reduction.")
@@ -3172,7 +3132,7 @@ with integrated_tab:
                     textinfo="label+percent",hovertemplate="%{label}: ₹%{value:.1f} Cr<extra></extra>"))
                 fig_dec.update_layout(**_chart_layout("ECL Risk Decomposition",280),showlegend=False,
                     annotations=[dict(text=f"₹{ecl_integrated:.1f}Cr",x=0.5,y=0.5,font_size=14,font_color=C["white"],showarrow=False)])
-                st.plotly_chart(fig_dec,width="stretch", key="iccre_plot_3043")
+                _plotly_chart_safe(fig_dec,width="stretch", key="iccre_plot_3043")
         with dec_col2:
             if transition_ran_i:
                 df_ti3=st.session_state.get("df_transition")
@@ -3184,7 +3144,7 @@ with integrated_tab:
                             y=[ds["PD_Transition"].max()*100,ds["ECL_Transition"].max()/EAD*100,max(0,(1.5-ds["DSCR"].min())/1.5*100)],
                             name=scen[:25],marker_color=_scen_color(scen)))
                     fig_sc.update_layout(**_chart_layout("Risk Metrics by Scenario (normalised %)",280),barmode="group",yaxis_title="%")
-                    _ax_style(fig_sc); st.plotly_chart(fig_sc,width="stretch", key="iccre_plot_3055")
+                    _ax_style(fig_sc); _plotly_chart_safe(fig_sc,width="stretch", key="iccre_plot_3055")
         # Public mode: proprietary integration working is hidden.
 
         # ── SCENARIO STRESS TABLE ──
@@ -3287,7 +3247,7 @@ with integrated_tab:
             fig_mc.add_vline(x=ecl_95,line_dash="dash",line_color=C["coral"],annotation_text=f"VaR 95%: {ecl_95:.1f}",row=1,col=1)
             fig_mc.add_trace(go.Scatter(x=pd_sim,y=ecl_sim,mode="markers",marker=dict(color=C["accent3"],size=3,opacity=0.3),name="Simulation"),row=1,col=2)
             fig_mc.update_layout(**_chart_layout("Monte Carlo Results",320)); _ax_style(fig_mc,rows=1,cols=2)
-            st.plotly_chart(fig_mc,width="stretch", key="iccre_plot_3158")
+            _plotly_chart_safe(fig_mc,width="stretch", key="iccre_plot_3158")
             st.session_state["mc_results"]={"Mean_PD":pd_mean,"PD_95":pd_95,"Mean_ECL":ecl_mean,"ECL_95":ecl_95,"Climate_Capital_VaR":ecl_95}
             log_model_run("MonteCarlo",{"company":company_name,"pd_mean":pd_mean,"pd_95":pd_95,"ecl_95":ecl_95})
 
@@ -3353,7 +3313,7 @@ with plots_tab:
                     fig.update_layout(**_chart_layout("Probability of Default — All Scenarios", 300))
                     fig.update_yaxes(tickformat=".1%")
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch", key="iccre_plot_3224")
+                    _plotly_chart_safe(fig, width="stretch", key="iccre_plot_3224")
 
                 with col2:
                     fig = go.Figure()
@@ -3364,7 +3324,7 @@ with plots_tab:
                             hovertemplate="Year: %{x}<br>ECL: ₹%{y:.1f} Cr<extra>" + scen[:18] + "</extra>"))
                     fig.update_layout(**_chart_layout("Expected Credit Loss (₹ Cr)", 300), barmode="group")
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch", key="iccre_plot_3235")
+                    _plotly_chart_safe(fig, width="stretch", key="iccre_plot_3235")
 
                 # Row 2: DSCR + Carbon Burden
                 col3, col4 = st.columns(2)
@@ -3381,7 +3341,7 @@ with plots_tab:
                         annotation_text="1.5× threshold", annotation_font_color=C["amber"])
                     fig.update_layout(**_chart_layout("DSCR Stress Trajectory", 300))
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch", key="iccre_plot_3252")
+                    _plotly_chart_safe(fig, width="stretch", key="iccre_plot_3252")
 
                 with col4:
                     fig = go.Figure()
@@ -3394,7 +3354,7 @@ with plots_tab:
                     fig.update_layout(**_chart_layout("Carbon Burden (% of Revenue)", 300))
                     fig.update_yaxes(ticksuffix="%")
                     _ax_style(fig)
-                    st.plotly_chart(fig, width="stretch", key="iccre_plot_3265")
+                    _plotly_chart_safe(fig, width="stretch", key="iccre_plot_3265")
 
                 # Row 3: EBITDA Margin + Stranded Assets + CAPEX Gap (3-panel subplot)
                 fig3 = make_subplots(rows=1, cols=3,
@@ -3414,7 +3374,7 @@ with plots_tab:
                     legend_override=dict(orientation="h", y=1.12)))
                 _ax_style(fig3, rows=1, cols=3)
                 fig3.update_yaxes(ticksuffix="%", row=1, col=1)
-                st.plotly_chart(fig3, width="stretch", key="iccre_plot_3285")
+                _plotly_chart_safe(fig3, width="stretch", key="iccre_plot_3285")
 
                 # Row 4: Carbon burden vs EBITDA scatter
                 fig_sc = go.Figure()
@@ -3430,7 +3390,7 @@ with plots_tab:
                 fig_sc.update_layout(**_chart_layout("Carbon Burden vs EBITDA Margin — Stress Path", 300))
                 fig_sc.update_xaxes(title="Carbon Burden (%)"); fig_sc.update_yaxes(title="EBITDA Margin (%)")
                 _ax_style(fig_sc)
-                st.plotly_chart(fig_sc, width="stretch", key="iccre_plot_3301")
+                _plotly_chart_safe(fig_sc, width="stretch", key="iccre_plot_3301")
 
         # ── SECTION 2: TARGETS COMPARISON ──────────────────────────────
         if tg_ran:
@@ -3453,7 +3413,7 @@ with plots_tab:
                     fig_tp.update_layout(**_chart_layout("PD — Baseline vs Target", 300))
                     fig_tp.update_yaxes(tickformat=".1%")
                     _ax_style(fig_tp)
-                    st.plotly_chart(fig_tp, width="stretch", key="iccre_plot_3324")
+                    _plotly_chart_safe(fig_tp, width="stretch", key="iccre_plot_3324")
 
                 with tc2:
                     fig_te = go.Figure()
@@ -3465,7 +3425,7 @@ with plots_tab:
                             name=f"{scen[:18]} Target", line=dict(color=clr, width=2.5), marker=dict(size=6)))
                     fig_te.update_layout(**_chart_layout("ECL — Baseline vs Target (₹ Cr)", 300))
                     _ax_style(fig_te)
-                    st.plotly_chart(fig_te, width="stretch", key="iccre_plot_3336")
+                    _plotly_chart_safe(fig_te, width="stretch", key="iccre_plot_3336")
 
                 # BRSR target comparison if available
                 if b_ran and "brsr_target_overlay" in st.session_state:
@@ -3480,7 +3440,7 @@ with plots_tab:
                     fig_bt.update_layout(**_chart_layout(f"BRSR Governance Signal: {curr_up:.0f} → {tgt_up:.0f} bps (−{reduction:.0f} bps reduction)", 250),
                         barmode="group", yaxis_title="Basis Points")
                     _ax_style(fig_bt)
-                    st.plotly_chart(fig_bt, width="stretch", key="iccre_plot_3351")
+                    _plotly_chart_safe(fig_bt, width="stretch", key="iccre_plot_3351")
 
         # ── SECTION 3: BRSR ANALYTICS ─────────────────────────────────
         if b_ran:
@@ -3509,7 +3469,7 @@ with plots_tab:
                     fig_gb.update_layout(**_chart_layout("GHG Intensity vs Sector Benchmarks (tCO₂/₹Cr)", 280))
                     fig_gb.update_yaxes(title="tCO₂e / ₹Cr")
                     _ax_style(fig_gb)
-                    st.plotly_chart(fig_gb, width="stretch", key="iccre_plot_3380")
+                    _plotly_chart_safe(fig_gb, width="stretch", key="iccre_plot_3380")
 
                 # BRSR risk overlay breakdown
                 with bc2:
@@ -3527,7 +3487,7 @@ with plots_tab:
                                 margin_override=dict(l=230, r=80, t=50, b=20)),
                         )
                         _ax_style(fig_fb)
-                        st.plotly_chart(fig_fb, width="stretch", key="iccre_plot_3398")
+                        _plotly_chart_safe(fig_fb, width="stretch", key="iccre_plot_3398")
                     else:
                         st.success("✅ No BRSR flags — zero risk overlay from operational climate risk")
 
@@ -3551,7 +3511,7 @@ with plots_tab:
                     **_chart_layout("SEBI BRSR Core Readiness", 320),
                     showlegend=True,
                 )
-                st.plotly_chart(fig_rad, width="stretch", key="iccre_plot_3422")
+                _plotly_chart_safe(fig_rad, width="stretch", key="iccre_plot_3422")
 
         # ── SECTION 4: PHYSICAL RISK ───────────────────────────────────
         if p_ran:
@@ -3573,7 +3533,7 @@ with plots_tab:
                             fig_rl.add_trace(go.Bar(x=phys["asset_id"], y=rl.fillna(0), name=col, marker_color=clr))
                     fig_rl.update_layout(**_chart_layout("Revenue Loss by Asset & Hazard (₹ Cr)", 300), barmode="stack")
                     _ax_style(fig_rl)
-                    st.plotly_chart(fig_rl, width="stretch", key="iccre_plot_3444")
+                    _plotly_chart_safe(fig_rl, width="stretch", key="iccre_plot_3444")
 
                 # Asset damage heatmap
                 with pc2:
@@ -3589,7 +3549,7 @@ with plots_tab:
                         ))
                         fig_hm.update_layout(**_chart_layout("Asset Vulnerability Heatmap (0–100)", 280))
                         _ax_style(fig_hm)
-                        st.plotly_chart(fig_hm, width="stretch", key="iccre_plot_3460")
+                        _plotly_chart_safe(fig_hm, width="stretch", key="iccre_plot_3460")
 
             # NGFS scenario projections fan chart
             if isinstance(df_pp, pd.DataFrame) and not df_pp.empty:
@@ -3616,7 +3576,7 @@ with plots_tab:
                 fig_fan.update_layout(**_chart_layout("Physical Revenue Loss — NGFS Scenarios · P10/P50/P90 Bands", 320,
                     legend_override=dict(orientation="h", y=1.1)))
                 _ax_style(fig_fan, rows=1, cols=len(scens_p))
-                st.plotly_chart(fig_fan, width="stretch", key="iccre_plot_3487")
+                _plotly_chart_safe(fig_fan, width="stretch", key="iccre_plot_3487")
 
                 # PD evolution across scenarios
                 fig_pd_p = go.Figure()
@@ -3628,7 +3588,7 @@ with plots_tab:
                 fig_pd_p.update_layout(**_chart_layout("Physical PD — NGFS Scenario Projections", 280))
                 fig_pd_p.update_yaxes(tickformat=".2%")
                 _ax_style(fig_pd_p)
-                st.plotly_chart(fig_pd_p, width="stretch", key="iccre_plot_3499")
+                _plotly_chart_safe(fig_pd_p, width="stretch", key="iccre_plot_3499")
 
             # Folium map
             if isinstance(phys, pd.DataFrame) and not phys.empty:
@@ -3664,7 +3624,7 @@ with plots_tab:
                     ))
                     fig_int.update_layout(**_chart_layout("Integrated Risk Metrics (normalised values)", 280))
                     _ax_style(fig_int)
-                    st.plotly_chart(fig_int, width="stretch", key="iccre_plot_3535")
+                    _plotly_chart_safe(fig_int, width="stretch", key="iccre_plot_3535")
 
             # MC distribution if available
             mc = st.session_state.get("mc_results")
@@ -3845,7 +3805,7 @@ with brsr_tab:
                 marker_color=[C["coral"],C["amber"],C["accent3"]],text=[f"{v:.2f}" for v in [s1_int,s2_int,s3_int]],textposition="outside"),row=1,col=2)
             fig_ghg.update_layout(**_chart_layout("",300)); _ax_style(fig_ghg,rows=1,cols=2)
             fig_ghg.update_yaxes(title="tCO₂e/₹Cr",row=1,col=1); fig_ghg.update_yaxes(title="tCO₂e/₹Cr",row=1,col=2)
-            st.plotly_chart(fig_ghg,width="stretch", key="iccre_plot_3716")
+            _plotly_chart_safe(fig_ghg,width="stretch", key="iccre_plot_3716")
             st.caption(f"Sector ({sector}): P25={ghg_bench['p25']}, P50={ghg_bench['p50']}, P75={ghg_bench['p75']} tCO₂e/₹Cr · Your intensity: **{ghg_int:.2f}** — {ghg_rank}")
 
             # Chart 2: risk overlay tornado
@@ -3858,7 +3818,7 @@ with brsr_tab:
                 fig_tor.update_layout(**_chart_layout(f"Risk Overlay by BRSR Flag (Total: +{pd_adj*10000:.0f}bps)",max(220,len(flags)*45+80),
                     margin_override=dict(l=250,r=80,t=50,b=20)))
                 fig_tor.update_xaxes(title="Basis Point Uplift")
-                _ax_style(fig_tor); st.plotly_chart(fig_tor,width="stretch", key="iccre_plot_3729")
+                _ax_style(fig_tor); _plotly_chart_safe(fig_tor,width="stretch", key="iccre_plot_3729")
             else:
                 st.success("✅ No BRSR flags — no risk overlay from operational climate risk")
 
@@ -3874,7 +3834,7 @@ with brsr_tab:
                     line=dict(color=C["mint"],width=1,dash="dot"),name="Full Compliance"))
                 fig_rad.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,100]),bgcolor=C["bg_dark"]),
                     **_chart_layout("",360),showlegend=True)
-                st.plotly_chart(fig_rad,width="stretch", key="iccre_plot_3745")
+                _plotly_chart_safe(fig_rad,width="stretch", key="iccre_plot_3745")
             with rcol2:
                 st.dataframe(pd.DataFrame([{"Item":k,"Status":"✅" if v==1 else "⚠️" if v==0.5 else "❌"} for k,v in rdness_items.items()])
                     .style.set_properties(**{"background-color":C["bg_dark"],"color":C["text"]}),
@@ -3889,7 +3849,7 @@ with brsr_tab:
             fig_fwd.add_trace(go.Bar(x=yr5,y=wc_ann,name="Water Cost Escalation",marker_color=C["accent3"]))
             fig_fwd.add_trace(go.Bar(x=yr5,y=ec_ann,name="Energy Carbon Surcharge",marker_color=C["amber"]))
             fig_fwd.update_layout(**_chart_layout("Projected Annual Operational Climate Cost (₹ Cr)",280),barmode="stack")
-            _ax_style(fig_fwd); st.plotly_chart(fig_fwd,width="stretch", key="iccre_plot_3760")
+            _ax_style(fig_fwd); _plotly_chart_safe(fig_fwd,width="stretch", key="iccre_plot_3760")
 
             # Chart 5: Emissions trend
             if s1_y0>0 and r_y0>0:
@@ -3902,7 +3862,7 @@ with brsr_tab:
                     line=dict(color=C["accent2"],width=3),marker=dict(size=10,color=C["accent"]),name="Scope 1 Intensity"))
                 fig_tr.add_hline(y=ghg_bench["p50"],line_dash="dash",line_color=C["amber"],annotation_text=f"Sector P50 ({ghg_bench['p50']})",annotation_font_color=C["amber"])
                 fig_tr.update_layout(**_chart_layout(f"Scope 1 GHG Intensity Trend — {dir_t} (CAGR: {cagr*100:.1f}%/yr)",260))
-                _ax_style(fig_tr); st.plotly_chart(fig_tr,width="stretch", key="iccre_plot_3773")
+                _ax_style(fig_tr); _plotly_chart_safe(fig_tr,width="stretch", key="iccre_plot_3773")
 
             # Compliance table
             st.subheader("📋 BRSR Compliance Status")
