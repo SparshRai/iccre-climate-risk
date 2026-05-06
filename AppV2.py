@@ -1,9 +1,9 @@
-MODEL_VERSION    = "DEMO-1.0"
+MODEL_VERSION    = "DEMO-1.1"
 PARAMETER_VERSION = "ClimateParams_v1.4_final_logic_corrected"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
-MODEL_BUILD_DATE  = "2026-04-05"
-MODEL_HASH        = "ICCRE_demo_locked_public"
+MODEL_BUILD_DATE  = "2026-05-06"
+MODEL_HASH        = "ICCRE_demo_public_v1_1"
 
 # ============================================================
 # PRODUCT & BRANDING
@@ -49,6 +49,12 @@ DEMO_DATASET = {
 # ============================================================
 # CHANGELOG v1.1 → v1.2
 # ============================================================
+# DEMO-1.1  Public demo patch: sidebar text/button contrast fixed;
+#           Streamlit Plotly duplicate element IDs prevented with
+#           automatic unique chart keys; peak/worst metric cards now
+#           show the scenario year and scenario name; reporting-year
+#           selector retained for snapshot outputs.
+#
 # UI-01  Complete dark-teal design system (CSS variables,
 #        gradient backgrounds, card components, KPI panels).
 #        All tables, charts, and metrics use consistent theme.
@@ -132,6 +138,30 @@ from plotly.subplots import make_subplots
 
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
+
+# ============================================================
+# STREAMLIT CHART KEY GUARD
+# ============================================================
+# Streamlit 1.5x can raise StreamlitDuplicateElementId when identical
+# Plotly figures are rendered in cached views, repeated tabs, or reruns
+# without explicit keys. This wrapper adds a unique deterministic key
+# when the caller has not provided one, while preserving all explicit keys.
+_ORIGINAL_ST_PLOTLY_CHART = st.plotly_chart
+
+def _safe_plotly_chart(fig, *args, **kwargs):
+    if "key" not in kwargs or kwargs.get("key") is None:
+        _n = st.session_state.get("_plotly_auto_key_counter", 0) + 1
+        st.session_state["_plotly_auto_key_counter"] = _n
+        title = "chart"
+        try:
+            title = str(fig.layout.title.text or "chart")[:40]
+        except Exception:
+            pass
+        safe_title = "".join(ch if ch.isalnum() else "_" for ch in title).strip("_")[:40] or "chart"
+        kwargs["key"] = f"auto_plotly_{safe_title}_{_n}"
+    return _ORIGINAL_ST_PLOTLY_CHART(fig, *args, **kwargs)
+
+st.plotly_chart = _safe_plotly_chart
 
 # ============================================================
 # PAGE CONFIG — must be the first Streamlit UI command
@@ -378,6 +408,33 @@ def _fmt_capex_position(v):
         return "—"
 
 
+def _metric_extreme(df, value_col, mode="max", scenario_col="Scenario", year_col="Year"):
+    """Return value/year/scenario for peak or worst metric cards."""
+    try:
+        if not isinstance(df, pd.DataFrame) or df.empty or value_col not in df.columns:
+            return None, None, None
+        series = pd.to_numeric(df[value_col], errors="coerce")
+        if series.dropna().empty:
+            return None, None, None
+        idx = series.idxmin() if mode == "min" else series.idxmax()
+        row = df.loc[idx]
+        val = float(row[value_col])
+        yr = int(row[year_col]) if year_col in df.columns and pd.notna(row[year_col]) else None
+        scen = str(row[scenario_col]) if scenario_col in df.columns else ""
+        return val, yr, scen
+    except Exception:
+        return None, None, None
+
+def _year_scenario_note(year, scenario, prefix="Achieved"):
+    if year is None and not scenario:
+        return ""
+    if year is None:
+        return f"{prefix} in scenario: {scenario}"
+    if scenario:
+        return f"{prefix} in {year} · Scenario: {scenario}"
+    return f"{prefix} in {year}"
+
+
 def scope_badge(scope: str, detail: str = ""):
     """Render a clear distinction between reporting-year and multi-year outputs."""
     if "single" in scope.lower() or "reporting" in scope.lower():
@@ -484,11 +541,15 @@ def render_cached_transition_results():
             {"title":f"{actual_ry} DSCR", "value":_fmt_num(ry_worst['DSCR'], "×", 2), "subtitle":"Debt-service capacity in reporting year", "accent":C["coral"] if ry_worst['DSCR']<1.2 else C["mint"], "scope":"Reporting year"},
         ], columns=3)
     scope_badge("multi", "Multi-year scenario peak/worst values across all selected years.")
+    _pd_v, _pd_y, _pd_s = _metric_extreme(df_transition, "PD_Transition", "max")
+    _ecl_v, _ecl_y, _ecl_s = _metric_extreme(df_transition, "ECL_Transition", "max")
+    _dscr_v, _dscr_y, _dscr_s = _metric_extreme(df_transition, "DSCR", "min")
+    _str_v, _str_y, _str_s = _metric_extreme(df_transition, "Stranded_Assets", "max")
     render_metric_grid([
-        {"title":"Peak Transition PD", "value":_fmt_pct(df_transition['PD_Transition'].max()), "subtitle":"Highest PD across selected scenarios and years", "accent":C["accent2"], "scope":"Multi-year scenario"},
-        {"title":"Peak ECL", "value":_fmt_money_cr(df_transition['ECL_Transition'].max()), "subtitle":"Maximum expected credit loss across scenario path", "accent":C["amber"], "scope":"Multi-year scenario"},
-        {"title":"Minimum DSCR", "value":_fmt_num(df_transition['DSCR'].min(), "×", 2), "subtitle":"Worst debt-service capacity across scenario path", "accent":C["coral"] if df_transition['DSCR'].min()<1.2 else C["mint"], "scope":"Multi-year scenario"},
-        {"title":"Peak Stranded Assets", "value":_fmt_money_cr(df_transition['Stranded_Assets'].max(), 0), "subtitle":"Maximum high-carbon asset risk", "accent":C["purple"], "scope":"Multi-year scenario"},
+        {"title":"Peak Transition PD", "value":_fmt_pct(_pd_v), "subtitle":_year_scenario_note(_pd_y, _pd_s), "accent":C["accent2"], "scope":"Multi-year scenario"},
+        {"title":"Peak ECL", "value":_fmt_money_cr(_ecl_v), "subtitle":_year_scenario_note(_ecl_y, _ecl_s), "accent":C["amber"], "scope":"Multi-year scenario"},
+        {"title":"Minimum DSCR", "value":_fmt_num(_dscr_v, "×", 2), "subtitle":_year_scenario_note(_dscr_y, _dscr_s, prefix="Worst"), "accent":C["coral"] if (_dscr_v is not None and _dscr_v<1.2) else C["mint"], "scope":"Multi-year scenario"},
+        {"title":"Peak Stranded Assets", "value":_fmt_money_cr(_str_v, 0), "subtitle":_year_scenario_note(_str_y, _str_s), "accent":C["purple"], "scope":"Multi-year scenario"},
     ], columns=4)
     fig_pd = go.Figure()
     for scen in df_transition["Scenario"].unique():
@@ -920,6 +981,41 @@ code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; b
     font-size: 11px;
     margin-left: 8px;
 }}
+
+/* ── DEMO-1.1 SIDEBAR CONTRAST FIX ───────────────────────── */
+section[data-testid="stSidebar"] .stButton > button,
+section[data-testid="stSidebar"] button[kind="secondary"],
+section[data-testid="stSidebar"] button[kind="primary"] {
+    background: linear-gradient(135deg, #06B6D4 0%, #22D3EE 100%) !important;
+    color: #062F2E !important;
+    border: 1px solid #22D3EE !important;
+    font-weight: 800 !important;
+    text-shadow: none !important;
+}
+section[data-testid="stSidebar"] .stButton > button *,
+section[data-testid="stSidebar"] button[kind="secondary"] *,
+section[data-testid="stSidebar"] button[kind="primary"] * {
+    color: #062F2E !important;
+    font-weight: 800 !important;
+}
+section[data-testid="stSidebar"] details,
+section[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background: rgba(13,59,74,0.95) !important;
+    border: 1px solid #115E6D !important;
+    border-radius: 10px !important;
+}
+section[data-testid="stSidebar"] summary,
+section[data-testid="stSidebar"] summary *,
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary * {
+    color: #E6F1F5 !important;
+    font-weight: 700 !important;
+}
+section[data-testid="stSidebar"] .stExpander p,
+section[data-testid="stSidebar"] [data-testid="stExpander"] p,
+section[data-testid="stSidebar"] [data-testid="stExpander"] div {
+    color: #E6F1F5 !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -2090,12 +2186,19 @@ with dashboard_tab:
     else:
         # Pull live metrics
         pd_t = ecl_t = dscr_t = stranded_t = capex_t = pd_p = ecl_p = brsr_pd = risk_score = None
+        pd_t_note = ecl_t_note = dscr_t_note = stranded_t_note = ""
         if transition_ran:
             df_t = st.session_state.get("df_transition")
             if isinstance(df_t,pd.DataFrame) and not df_t.empty:
-                pd_t = df_t["PD_Transition"].max(); ecl_t = df_t["ECL_Transition"].max()
-                dscr_t = df_t["DSCR"].min(); stranded_t = df_t["Stranded_Assets"].max()
+                pd_t, _pd_y_dash, _pd_s_dash = _metric_extreme(df_t, "PD_Transition", "max")
+                ecl_t, _ecl_y_dash, _ecl_s_dash = _metric_extreme(df_t, "ECL_Transition", "max")
+                dscr_t, _dscr_y_dash, _dscr_s_dash = _metric_extreme(df_t, "DSCR", "min")
+                stranded_t, _str_y_dash, _str_s_dash = _metric_extreme(df_t, "Stranded_Assets", "max")
                 capex_t = df_t["CAPEX_Gap"].max()
+                pd_t_note = _year_scenario_note(_pd_y_dash, _pd_s_dash)
+                ecl_t_note = _year_scenario_note(_ecl_y_dash, _ecl_s_dash)
+                dscr_t_note = _year_scenario_note(_dscr_y_dash, _dscr_s_dash, prefix="Worst")
+                stranded_t_note = _year_scenario_note(_str_y_dash, _str_s_dash)
         if physical_ran:
             ps = st.session_state.get("phys_summary",{})
             if isinstance(ps,dict):
@@ -2122,12 +2225,12 @@ with dashboard_tab:
 
         # KPI row
         kpis = []
-        if pd_t is not None:   kpis.append(("Peak Transition PD",f"{pd_t:.2%}",C["accent2"],"Multi-year scenario peak"))
-        if ecl_t is not None:  kpis.append(("Peak ECL",f"₹{ecl_t:,.1f} Cr",C["amber"],"Multi-year scenario peak"))
-        if dscr_t is not None: kpis.append(("Worst DSCR",f"{dscr_t:.2f}×",C["coral"] if dscr_t<1.2 else C["mint"],"Multi-year scenario worst"))
+        if pd_t is not None:   kpis.append(("Peak Transition PD",f"{pd_t:.2%}",C["accent2"],pd_t_note or "Multi-year scenario peak"))
+        if ecl_t is not None:  kpis.append(("Peak ECL",f"₹{ecl_t:,.1f} Cr",C["amber"],ecl_t_note or "Multi-year scenario peak"))
+        if dscr_t is not None: kpis.append(("Worst DSCR",f"{dscr_t:.2f}×",C["coral"] if dscr_t<1.2 else C["mint"],dscr_t_note or "Multi-year scenario worst"))
         if pd_p is not None:   kpis.append(("Physical PD",f"{pd_p:.2%}",C["coral"],"Asset-level physical risk"))
         if brsr_pd is not None:kpis.append(("BRSR Governance Signal",f"+{brsr_pd*10000:.0f} bps",C["purple"],"Operational climate risk"))
-        if stranded_t is not None: kpis.append(("Stranded Assets",f"₹{stranded_t:,.0f} Cr",C["amber"],"High-carbon asset risk"))
+        if stranded_t is not None: kpis.append(("Stranded Assets",f"₹{stranded_t:,.0f} Cr",C["amber"],stranded_t_note or "High-carbon asset risk"))
 
         cols = st.columns(min(len(kpis),6))
         for col_obj,(label,val,color,hint) in zip(cols,kpis):
@@ -2311,11 +2414,15 @@ with transition_tab:
 
             # Headline KPIs — multi-year scenario peaks/worst values
             st.markdown("<h3 style='margin-top:16px;'>Headline Indicators</h3>",unsafe_allow_html=True)
+            _pd_v, _pd_y, _pd_s = _metric_extreme(df_transition, "PD_Transition", "max")
+            _ecl_v, _ecl_y, _ecl_s = _metric_extreme(df_transition, "ECL_Transition", "max")
+            _dscr_v, _dscr_y, _dscr_s = _metric_extreme(df_transition, "DSCR", "min")
+            _str_v, _str_y, _str_s = _metric_extreme(df_transition, "Stranded_Assets", "max")
             render_metric_grid([
-                {"title":"Peak Transition PD", "value":_fmt_pct(df_transition['PD_Transition'].max()), "subtitle":"Highest PD across selected scenarios and years", "accent":C["accent2"], "scope":"Multi-year scenario"},
-                {"title":"Peak ECL", "value":_fmt_money_cr(df_transition['ECL_Transition'].max()), "subtitle":"Maximum expected credit loss across scenario path", "accent":C["amber"], "scope":"Multi-year scenario"},
-                {"title":"Minimum DSCR", "value":_fmt_num(df_transition['DSCR'].min(), "×", 2), "subtitle":"Worst debt-service capacity across scenario path", "accent":C["coral"] if df_transition['DSCR'].min()<1.2 else C["mint"], "scope":"Multi-year scenario"},
-                {"title":"Peak Stranded Assets", "value":_fmt_money_cr(df_transition['Stranded_Assets'].max(), 0), "subtitle":"Maximum high-carbon asset risk", "accent":C["purple"], "scope":"Multi-year scenario"},
+                {"title":"Peak Transition PD", "value":_fmt_pct(_pd_v), "subtitle":_year_scenario_note(_pd_y, _pd_s), "accent":C["accent2"], "scope":"Multi-year scenario"},
+                {"title":"Peak ECL", "value":_fmt_money_cr(_ecl_v), "subtitle":_year_scenario_note(_ecl_y, _ecl_s), "accent":C["amber"], "scope":"Multi-year scenario"},
+                {"title":"Minimum DSCR", "value":_fmt_num(_dscr_v, "×", 2), "subtitle":_year_scenario_note(_dscr_y, _dscr_s, prefix="Worst"), "accent":C["coral"] if (_dscr_v is not None and _dscr_v<1.2) else C["mint"], "scope":"Multi-year scenario"},
+                {"title":"Peak Stranded Assets", "value":_fmt_money_cr(_str_v, 0), "subtitle":_year_scenario_note(_str_y, _str_s), "accent":C["purple"], "scope":"Multi-year scenario"},
             ], columns=4)
 
             # Charts
