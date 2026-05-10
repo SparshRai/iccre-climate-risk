@@ -1,21 +1,21 @@
-MODEL_VERSION    = "DEMO-1.6"
-PARAMETER_VERSION = "ClimateParams_v1.4_final_logic_corrected"
+MODEL_VERSION    = "1.4.0-full"
+PARAMETER_VERSION = "ClimateParams_v1.4_full_logic_corrected"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
 MODEL_BUILD_DATE  = "2026-05-06"
-MODEL_HASH        = "ICCRE_demo_public_v1_6_github_leads"
+MODEL_HASH        = "ICCRE_v1.4_full_logic_corrected"
 
 # ============================================================
 # PRODUCT & BRANDING
 # ============================================================
 PRODUCT_TAGLINE  = "India's first quantitative climate-to-credit engine"
 PRODUCT_SUBTITLE = "NGFS-aligned · BRSR-native · ISSB S2-ready · INR-denominated"
-CONTACT_EMAIL    = "Ankitrai2193@gmail.com"
-PRODUCT_URL      = ""
-LINKEDIN_URL     = ""
+CONTACT_EMAIL    = "hello@iccre.in"
+PRODUCT_URL      = "https://iccre.in"
+LINKEDIN_URL     = "https://linkedin.com/company/iccre"
 MODEL_USE_NOTE  = "Decision-support / scenario-analysis tool. Outputs require user review and calibration before regulated credit decisions."
 MODEL_CONFIDENCE_DEFAULT = "Medium — assumption-led, scenario-consistent, not borrower-calibrated"
-# Public demo defaults for more conservative, market-ready interpretation.
+# Full version defaults for more conservative, market-ready interpretation.
 # Physical EAD allocation defaults to company-wide proportional exposure when asset register covers
 # only part of company revenue; full-EAD allocation remains available as conservative advanced mode.
 DEFAULT_PHYSICAL_EAD_MODE = "Company-wide proportional exposure"
@@ -49,7 +49,7 @@ DEMO_DATASET = {
 # ============================================================
 # CHANGELOG v1.1 → v1.2
 # ============================================================
-# DEMO-1.1  Public demo patch: sidebar text/button contrast fixed;
+# DEMO-1.1  Full version patch: sidebar text/button contrast fixed;
 #           Streamlit Plotly duplicate element IDs prevented with
 #           automatic unique chart keys; peak/worst metric cards now
 #           show the scenario year and scenario name; reporting-year
@@ -160,6 +160,8 @@ st.set_page_config(
 )
 
 
+_ORIGINAL_ST_PLOTLY_CHART = st.plotly_chart
+
 def _plotly_chart_safe(fig, *args, **kwargs):
     """Render Plotly charts with a guaranteed unique Streamlit key.
 
@@ -182,7 +184,7 @@ def _plotly_chart_safe(fig, *args, **kwargs):
         base_key = str(base_key)
     safe_base = "".join(ch if ch.isalnum() else "_" for ch in base_key).strip("_")[:80] or "plotly"
     kwargs["key"] = f"{safe_base}_{_n}"
-    return st.plotly_chart(fig, *args, **kwargs)
+    return _ORIGINAL_ST_PLOTLY_CHART(fig, *args, **kwargs)
 
 
 def _secret_or_env(name: str, default=None):
@@ -203,7 +205,7 @@ def _get_groq_client():
         raise RuntimeError("GROQ_API_KEY is missing. Add it in Streamlit Secrets or environment variables.")
     return Groq(api_key=api_key)
 
-# Public demo mode hides proprietary formulas, coefficients, and correction notes.
+# Full version mode hides proprietary formulas, coefficients, and correction notes.
 # Set ICCRE_INTERNAL_MODE="true" in Streamlit Secrets to expose internal methodology/calibration screens.
 INTERNAL_MODE = str(_secret_or_env("ICCRE_INTERNAL_MODE", "false")).lower() in {"1", "true", "yes", "y"}
 PUBLIC_MODE = not INTERNAL_MODE
@@ -323,7 +325,8 @@ def _ax_style(fig, rows=1, cols=1):
 SCENARIO_COLORS = {
     "Current Policies":                               C["coral"],   # red-coral
     "Nationally Determined Contributions (NDCs)":     C["amber"],   # amber-yellow
-    "Below 2°C":                                      C["accent2"], # teal-cyan
+    "Net Zero 2050":                                  C["accent2"], # teal-cyan
+    "Below 2°C":                                      C["accent2"],
     "Below 2C":                                       C["accent2"],
     "Below 2 Degrees":                                C["accent2"],
 }
@@ -503,13 +506,13 @@ def clean_scenario_legend(fig, orientation="h"):
 # ============================================================
 # PERSISTENT DEMO OUTPUT RENDERERS
 # These make tab outputs remain visible after tab switches/reruns.
-# Results are cleared only by the sidebar Reset Demo Results button.
+# Results are cleared only by the sidebar Reset Results button.
 # ============================================================
 def render_cached_transition_results():
     df_transition = st.session_state.get("df_transition")
     if not isinstance(df_transition, pd.DataFrame) or df_transition.empty:
         return False
-    scope_badge("multi", "Saved transition results are retained until Reset Demo Results is clicked.")
+    scope_badge("multi", "Saved transition results are retained until Reset Results is clicked.")
     df_sum = (df_transition.groupby("Scenario").agg({
         "Carbon_Burden":"max","EBITDA_Margin":"min","DSCR":"min",
         "PD_Transition":"max","ECL_Transition":"max",
@@ -577,14 +580,14 @@ def render_cached_physical_results():
     df_phys_proj = st.session_state.get("df_physical_projection")
     if not isinstance(ps, dict) or not isinstance(df, pd.DataFrame) or df.empty:
         return False
-    scope_badge("single", f"Saved physical-risk results for reporting year {ps.get('Reporting Year', REPORTING_YEAR)}. Retained until Reset Demo Results is clicked.")
+    scope_badge("single", f"Saved physical-risk results for reporting year {ps.get('Reporting Year', REPORTING_YEAR)}. Retained until Reset Results is clicked.")
     render_metric_grid([
         {"title":"Total Revenue Loss", "value":_fmt_money_cr(ps.get('Total Revenue Loss (₹ Cr)',0)), "subtitle":"Estimated annual loss from asset downtime", "accent":C["amber"], "scope":"Saved reporting year"},
         {"title":"EBITDA Impact", "value":_fmt_money_cr(ps.get('EBITDA Loss (₹ Cr)',0)), "subtitle":"Revenue loss translated into EBITDA impact", "accent":C["coral"], "scope":"Saved reporting year"},
         {"title":"Post-Risk DSCR", "value":_fmt_num(ps.get('Post-Risk DSCR',0), "×", 2), "subtitle":"Debt service capacity after physical-risk shock", "accent":C["mint"] if float(ps.get('Post-Risk DSCR',0))>=1.2 else C["coral"], "scope":"Saved reporting year"},
         {"title":"Physical Risk PD", "value":_fmt_pct(ps.get('Physical Risk PD',0)), "subtitle":"Portfolio average physical-risk adjusted PD", "accent":C["accent2"], "scope":"Saved reporting year"},
         {"title":"ΔECL", "value":_fmt_money_cr(ps.get('ΔECL (₹ Cr)',0), 2), "subtitle":"Incremental expected credit loss", "accent":C["purple"], "scope":"Saved reporting year"},
-        {"title":"Physical EAD Used", "value":_fmt_money_cr(ps.get('Effective Physical EAD (₹ Cr)',0), 1), "subtitle":str(ps.get('Physical EAD Allocation Mode','Demo allocation')), "accent":C["mint"], "scope":"Saved reporting year"},
+        {"title":"Physical EAD Used", "value":_fmt_money_cr(ps.get('Effective Physical EAD (₹ Cr)',0), 1), "subtitle":str(ps.get('Physical EAD Allocation Mode','Selected allocation')), "accent":C["mint"], "scope":"Saved reporting year"},
     ], columns=3)
     st.subheader("🗺️ Asset Vulnerability Heatmap")
     score_map={"H_flood":"Flood","H_heat":"Heat","H_cyclone":"Cyclone"}
@@ -625,7 +628,7 @@ def render_cached_brsr_results():
     st.markdown(f"""
     <div style="background:{C['card']};border:1px solid {sev_color};border-radius:10px;padding:14px 18px;margin-bottom:12px;">
       <div style="font-size:16px;font-weight:700;color:{sev_color};">Saved BRSR Operational Climate Risk · Score: {risk_score:.0f}/100</div>
-      <div style="font-size:13px;color:{C['slate']};margin-top:2px;">Governance signal: +{pd_adj*10000:.0f}bps · Readiness: {readiness:.0f}% · Results retained until Reset Demo Results is clicked.</div>
+      <div style="font-size:13px;color:{C['slate']};margin-top:2px;">Governance signal: +{pd_adj*10000:.0f}bps · Readiness: {readiness:.0f}% · Results retained until Reset Results is clicked.</div>
     </div>""", unsafe_allow_html=True)
     render_metric_grid([
         {"title":"Risk Score", "value":f"{risk_score:.0f}/100", "subtitle":"BRSR operational risk", "accent":sev_color, "scope":"Saved reporting year"},
@@ -644,7 +647,7 @@ def render_cached_targets_results():
     df_tgt = st.session_state.get("df_target")
     if not isinstance(eff, pd.DataFrame) or eff.empty:
         return False
-    scope_badge("multi", "Saved transition target scenario results are retained until Reset Demo Results is clicked.")
+    scope_badge("multi", "Saved transition target scenario results are retained until Reset Results is clicked.")
     st.markdown(f"<h4 style='color:{C['accent2']};'>Saved Financial Target Effectiveness</h4>", unsafe_allow_html=True)
     st.dataframe(eff.style.format({"PD_Target_Max":"{:.3%}","PD_Base_Max":"{:.3%}","PD_Reduction_%":"{:.1f}%"})
         .background_gradient(subset=["PD_Reduction_%"],cmap="Greens"), width="stretch", hide_index=True)
@@ -1090,190 +1093,6 @@ st.markdown(f"""
 
 
 # ============================================================
-# PUBLIC DEMO ACCESS GATE — lead capture before access
-# ============================================================
-DEMO_ACCESS_FILE = Path("Data/demo_leads.csv")
-PUBLIC_DEMO_LOCKED = True
-PUBLIC_DEMO_NOTE = (
-    "This public demo uses a fictional company. Inputs are locked so every user sees the same case. "
-    "You can run and explore all output modules. Full company/portfolio analysis is available by pilot request."
-)
-
-
-def _valid_email(value: str) -> bool:
-    value = (value or "").strip()
-    return "@" in value and "." in value.split("@")[-1]
-
-
-def _csv_line_for_lead(row: dict, columns: list[str]) -> str:
-    """Create one safe CSV line for GitHub/local append without adding pandas dependency at runtime."""
-    import csv, io
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
-    writer.writerow({k: row.get(k, "") for k in columns})
-    return buf.getvalue()
-
-
-def _append_lead_to_github_csv(row: dict):
-    """Append demo lead to a CSV file in GitHub when repository secrets are configured.
-
-    Required Streamlit Secrets / env vars:
-      GITHUB_TOKEN       = GitHub fine-grained token with Contents: Read/Write
-      GITHUB_REPO        = owner/repo, e.g. yourname/iccre-climate-risk
-    Optional:
-      GITHUB_BRANCH      = branch name, default main
-      GITHUB_LEADS_PATH  = file path in repo, default Data/demo_leads.csv
-
-    If these are not configured or the GitHub API call fails, the app continues
-    and still stores the lead locally in Data/demo_leads.csv.
-    """
-    token = _secret_or_env("GITHUB_TOKEN")
-    # Default repository is intentionally not displayed anywhere in the user interface.
-    # Override with GITHUB_REPO in Streamlit Secrets if needed.
-    repo = _secret_or_env("GITHUB_REPO", base64.b64decode("U3BhcnNoUmFpL2ljY3JlLWNsaW1hdGUtcmlzaw==").decode("utf-8"))
-    if not token or not repo:
-        return False
-
-    branch = _secret_or_env("GITHUB_BRANCH", "main")
-    path = _secret_or_env("GITHUB_LEADS_PATH", "Data/demo_leads.csv")
-    api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "ICCRE-Demo-Lead-Capture",
-    }
-
-    columns = [
-        "captured_at_utc", "name", "email", "organisation", "role",
-        "purpose", "notes", "demo_company", "model_version"
-    ]
-
-    try:
-        # Read current file if it exists.
-        get_req = urllib.request.Request(f"{api_url}?ref={branch}", headers=headers, method="GET")
-        sha = None
-        existing = ""
-        try:
-            with urllib.request.urlopen(get_req, timeout=8) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-                sha = payload.get("sha")
-                content_b64 = payload.get("content", "")
-                existing = base64.b64decode(content_b64).decode("utf-8") if content_b64 else ""
-        except Exception:
-            # File does not exist or cannot be read; create it with header.
-            existing = ""
-            sha = None
-
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        if not existing.strip():
-            existing = ",".join(columns) + "\n"
-        existing += _csv_line_for_lead(row, columns)
-
-        body = {
-            "message": f"Add ICCRE demo lead - {row.get('email', 'unknown')}",
-            "content": base64.b64encode(existing.encode("utf-8")).decode("utf-8"),
-            "branch": branch,
-        }
-        if sha:
-            body["sha"] = sha
-
-        put_req = urllib.request.Request(
-            api_url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={**headers, "Content-Type": "application/json"},
-            method="PUT",
-        )
-        with urllib.request.urlopen(put_req, timeout=10):
-            return True
-    except Exception:
-        return False
-
-
-def _save_demo_lead(lead: dict):
-    """Save user lead locally, optionally commit to GitHub, and optionally forward to a webhook."""
-    os.makedirs("Data", exist_ok=True)
-    row = {**lead, "captured_at_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}
-    pd.DataFrame([row]).to_csv(DEMO_ACCESS_FILE, mode="a", header=not DEMO_ACCESS_FILE.exists(), index=False)
-
-    # Optional persistent storage in your GitHub repository.
-    # Configure GITHUB_TOKEN + GITHUB_REPO in Streamlit Secrets to enable.
-    github_saved = _append_lead_to_github_csv(row)
-    st.session_state["lead_saved_to_github"] = bool(github_saved)
-
-    webhook = _secret_or_env("LEADS_WEBHOOK_URL")
-    if webhook:
-        try:
-            req = urllib.request.Request(
-                webhook,
-                data=json.dumps(row).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=4)
-        except Exception:
-            pass
-
-
-def demo_access_gate():
-    """Collect basic user details before opening the public demo."""
-    if st.session_state.get("demo_access_granted"):
-        return
-
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg,{C['card']},{C['bg_mid']});border:1px solid {C['bg_ocean']};border-radius:16px;padding:28px 34px;margin-top:18px;">
-      <div style="font-size:24px;font-weight:800;color:{C['white']};margin-bottom:6px;">Access ICCRE Public Demo</div>
-      <div style="font-size:13px;color:{C['slate']};line-height:1.7;max-width:900px;">
-        {PUBLIC_DEMO_NOTE}<br>
-        <b>Demo company:</b> Bharat Steel Industries Ltd · <b>Sector:</b> Steel · <b>Reporting year:</b> selectable after access
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    with st.form("demo_lead_form", clear_on_submit=False):
-        c1, c2 = st.columns(2)
-        name = c1.text_input("Name", placeholder="Your name")
-        email = c2.text_input("Work Email *", placeholder="name@company.com")
-        org = c1.text_input("Organisation *", placeholder="Company / institution")
-        role = c2.selectbox("Role", ["Bank / Risk", "ESG / Sustainability", "Corporate Finance", "Consulting", "Investor / VC", "Founder / Startup", "Student / Researcher", "Other"])
-        purpose = st.selectbox("Purpose of demo *", ["Evaluate for pilot", "Explore product", "Research / learning", "Partnership discussion", "Investment interest", "Other"])
-        notes = st.text_area("Anything specific you want to evaluate?", placeholder="Optional", height=80)
-        consent = st.checkbox("I agree that my details may be recorded for demo follow-up.")
-        submitted = st.form_submit_button("Enter Demo", type="primary", width="stretch")
-
-    if submitted:
-        if not _valid_email(email):
-            st.error("Please enter a valid email address.")
-            st.stop()
-        if not org.strip():
-            st.error("Please enter your organisation.")
-            st.stop()
-        if not consent:
-            st.error("Please confirm consent to continue.")
-            st.stop()
-        lead = {
-            "name": name.strip(),
-            "email": email.strip(),
-            "organisation": org.strip(),
-            "role": role,
-            "purpose": purpose,
-            "notes": notes.strip(),
-            "demo_company": DEMO_DATASET["company_name"],
-            "model_version": MODEL_VERSION,
-        }
-        _save_demo_lead(lead)
-        st.session_state["demo_access_granted"] = True
-        st.session_state["demo_lead"] = lead
-        st.rerun()
-
-    st.info("After access, open each tab and run the module you want to explore. Results stay saved until you click **Reset Demo Results**.")
-    st.stop()
-
-
-demo_access_gate()
-
-# ============================================================
 # SESSION STATE DEFAULTS
 # ============================================================
 _DEFAULTS = {
@@ -1499,6 +1318,10 @@ def ecl_cr(pd, lgd, ead_cr):
     """Expected credit loss in ₹ Cr. EAD inputs in this app are already ₹ Cr, so no /1000 conversion."""
     return float(np.clip(pd, 0, 1) * np.clip(lgd, 0, 1) * max(float(ead_cr), 0.0))
 
+def scenario_weighted_summary(df, metric, scenario_col="Scenario"):
+    """Backward-compatible alias: management-weighted peak by scenario."""
+    return scenario_weighted_peak(df, metric, scenario_col=scenario_col)
+
 def scenario_weighted_peak(df, metric, scenario_col="Scenario"):
     if not isinstance(df, pd.DataFrame) or df.empty or metric not in df.columns or scenario_col not in df.columns:
         return None
@@ -1506,6 +1329,13 @@ def scenario_weighted_peak(df, metric, scenario_col="Scenario"):
     weights = {s: SCENARIO_WEIGHTS.get(s, 1.0) for s in grp.index}
     total = sum(weights.values()) or 1.0
     return float(sum(grp[s] * weights[s] / total for s in grp.index))
+
+def model_confidence_label(has_validation=False, has_calibration=False):
+    if has_validation and has_calibration:
+        return "High — calibrated and validation-supported"
+    if has_validation or has_calibration:
+        return "Medium-High — partially evidenced"
+    return MODEL_CONFIDENCE_DEFAULT
 
 def simulate_carbon_price_path(start, years, drift=0.05, vol=0.25):
     prices = [start]
@@ -1572,38 +1402,8 @@ df_long   = df_ngfs.melt(
 df_long["Year"] = df_long["Year"].astype(int)
 
 # ============================================================
-# PUBLIC DEMO SCENARIO FILTER
+# REPORTING-YEAR HELPERS
 # ============================================================
-# Public demo intentionally exposes only three scenario families:
-# 1) Current Policies, 2) NDCs, 3) Below 2°C.
-# The NGFS source file may use slightly different labels, so we resolve aliases robustly.
-PUBLIC_SCENARIO_FAMILIES = {
-    "Current Policies": ["current policies"],
-    "Nationally Determined Contributions (NDCs)": ["nationally determined contributions", "ndc"],
-    "Below 2°C": ["below 2", "below 2°", "below 2c", "below 2 c", "below 2 degree"],
-}
-
-def _match_public_scenario_name(name: str, aliases: list[str]) -> bool:
-    n = str(name).lower().replace("°", "").replace("degrees", "degree")
-    for alias in aliases:
-        a = alias.lower().replace("°", "").replace("degrees", "degree")
-        if a in n:
-            return True
-    return False
-
-def get_public_demo_scenarios(df):
-    available = sorted(df["Scenario"].dropna().astype(str).unique())
-    selected = []
-    for display, aliases in PUBLIC_SCENARIO_FAMILIES.items():
-        match = next((sc for sc in available if _match_public_scenario_name(sc, aliases)), None)
-        if match and match not in selected:
-            selected.append(match)
-    return selected
-
-PUBLIC_DEMO_SCENARIOS = get_public_demo_scenarios(df_long)
-if PUBLIC_DEMO_SCENARIOS:
-    df_long = df_long[df_long["Scenario"].isin(PUBLIC_DEMO_SCENARIOS)].copy()
-
 def _nearest_available_year(years, target_year):
     vals = sorted(int(y) for y in set(years))
     if not vals:
@@ -1632,40 +1432,47 @@ def ai_calibrate_parameters(sector, *_):
 
 
 # ============================================================
-# LOCKED PUBLIC DEMO SIDEBAR — fixed fictional company, all modules available
+# SIDEBAR
 # ============================================================
 st.sidebar.markdown(f"""
 <div style="padding:14px 0 10px;">
   <div style="font-size:20px;font-weight:800;color:{C['accent2']};letter-spacing:-0.02em;">ICCRE</div>
   <div style="font-size:10px;color:{C['slate']};margin-top:1px;line-height:1.5;">
-    Locked public demo<br>
+    {PRODUCT_TAGLINE}<br>
     <span style="color:{C['bg_ocean']}">v{MODEL_VERSION} · {MODEL_BUILD_DATE}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown(f"""
-<div style='background:{C['amber']}22;border:1px solid {C['amber']};border-radius:8px;padding:10px 12px;margin:8px 0;font-size:11px;line-height:1.55;'>
-  <b style='color:{C['amber']};'>🔒 Demo company locked</b><br>
-  Bharat Steel Industries Ltd · Steel · Reporting Year selectable<br>
-  Company inputs cannot be changed in this public demo.
-</div>
-""", unsafe_allow_html=True)
+# ── DEMO MODE ────────────────────────────────────────────────
+st.sidebar.markdown(
+    f"<div style='font-size:11px;font-weight:700;color:{C['amber']};text-transform:uppercase;"
+    f"letter-spacing:.08em;margin-bottom:4px;'>⚡ Quick Start</div>",
+    unsafe_allow_html=True
+)
 
-lead = st.session_state.get("demo_lead", {})
-if lead:
-    st.sidebar.caption(f"Access: {lead.get('email','')}")
+demo_col1, demo_col2 = st.sidebar.columns(2)
+load_demo = demo_col1.button("🎬 Load Demo", width="stretch",
+    help="Load Bharat Steel Industries Ltd — a pre-configured demo that produces compelling, realistic output in one click.")
+clear_demo = demo_col2.button("🗑️ Reset", width="stretch",
+    help="Clear all results and inputs.")
 
-clear_demo = st.sidebar.button("↻ Reset Demo Results", width="stretch", help="Clears all saved demo outputs. Results otherwise remain available while you switch tabs.")
+if load_demo:
+    for k, v in DEMO_DATASET.items():
+        st.session_state[f"_demo_{k}"] = v
+    st.session_state["_demo_loaded"] = True
+    st.rerun()
+
 if clear_demo:
     _RESET_KEYS = [
         "transition_ran","physical_ran","targets_ran","brsr_ran","integrated_ran",
         "results_ready","df_transition","df_transition_summary","df_target",
         "df_target_effect","phys_summary","phys_assets","df_physical_projection",
-        "brsr_summary","brsr_flags","brsr_pd_adj","brsr_target_overlay",
+        "brsr_summary","brsr_flags","brsr_pd_adj","brsr_target_uplift",
         "brsr_pd_reduction","brsr_remaining_flags","df_integrated_summary",
         "mc_results","multi_year_results","calibrated_params",
-        "historical_data","validation_results","ai_outputs","run_full_demo_requested",
+        "historical_data","validation_results","ai_outputs",
+        "_demo_loaded",
     ]
     for _k in _RESET_KEYS:
         if _k in st.session_state:
@@ -1674,73 +1481,139 @@ if clear_demo:
         st.session_state[_k2] = _v2
     st.rerun()
 
-with st.sidebar.expander("📋 How to use this demo", expanded=True):
+# Demo loaded indicator
+if st.session_state.get("_demo_loaded"):
+    st.sidebar.markdown(
+        f"<div style='background:{C['amber']}22;border:1px solid {C['amber']};border-radius:6px;"
+        f"padding:6px 10px;margin:4px 0;font-size:10px;color:{C['amber']};font-weight:600;'>"
+        f"🎬 Demo: Bharat Steel Industries Ltd</div>",
+        unsafe_allow_html=True
+    )
+
+st.sidebar.divider()
+
+# ── DEMO GUIDE ───────────────────────────────────────────────
+with st.sidebar.expander("📋 Demo Guide — 3-Tab Story", expanded=False):
     st.markdown(f"""
 <div style="font-size:11px;color:{C['off_white']};line-height:1.8;">
-1. Run the module tab you want to explore<br>
-2. Open <b>Dashboard</b> for board-level summary<br>
-3. Explore <b>Transition</b>, <b>Physical</b>, <b>BRSR</b>, <b>Targets</b>, and <b>Integrated Risk</b><br>
-4. Results remain saved while switching tabs<br>
-5. Use <b>Reset Demo Results</b> only when you want to clear outputs
+
+**Step 1 — Load the demo**
+Click **🎬 Load Demo** above. This loads a fictional Steel company with realistic data.
+
+**Step 2 — Run Transition Risk** ⚡
+Go to the **⚡ Transition Risk** tab.
+Click **▶ Run Transition Risk Engine**.
+
+*What to say:* "Under Net Zero 2050, this company's PD jumps from 1.5% to 7.3% — a 5× increase. The DSCR falls below 1.0x by 2035, meaning the company cannot service its debt. Carbon burden reaches 11.4% of revenue — higher than the EBITDA margin."
+
+**Step 3 — Run BRSR** 📘
+Enable **📘 BRSR Diagnostics** in sidebar.
+Go to the **📘 BRSR Core** tab.
+Click **▶ Run BRSR Diagnostics**.
+
+*What to say:* "On top of the transition risk, 5 operational flags add 110 basis points to PD. This is the risk that most Indian tools miss completely — the credit cost of poor ESG governance."
+
+**Step 4 — Integrated Risk** 🧩
+Go to **🧩 Integrated Risk** tab.
+(Runs automatically using both results.)
+
+*What to say:* "Gaussian copula combines both risks without double-counting. The integrated PD is 7.8% with an ICAAP capital signal of ELEVATED. This is the number that goes into the board pack."
+
 </div>
 """, unsafe_allow_html=True)
 
-# Fixed demo inputs — no public company input fields.
-for k, v in DEMO_DATASET.items():
-    st.session_state[f"_demo_{k}"] = v
-st.session_state["_demo_loaded"] = True
+st.sidebar.markdown("**Execution Flow**")
+st.sidebar.markdown(f"""
+<div style="font-size:11px;color:{C['slate']};line-height:1.9;">
+1️⃣ Company data &nbsp;→&nbsp; 2️⃣ AI parameters<br>
+3️⃣ ⚡ Transition Risk (core)<br>
+4️⃣ 🌍 Physical Risk (optional)<br>
+5️⃣ 📘 BRSR Diagnostics (optional)<br>
+6️⃣ 🎯 Targets (optional)<br>
+7️⃣ 🧩 Integrated Risk<br>
+8️⃣ 🤖 AI Narrative
+</div>""", unsafe_allow_html=True)
+st.sidebar.divider()
 
-company_name = DEMO_DATASET["company_name"]
-sector = DEMO_DATASET["sector"]
+# Use demo values if loaded, otherwise use defaults
+_d = st.session_state.get("_demo_loaded", False)
+def _dv(key, default):
+    """Return demo value if demo is loaded, else default."""
+    return st.session_state.get(f"_demo_{key}", default) if _d else default
 
-_available_years = sorted(int(y) for y in df_long["Year"].dropna().unique())
-_default_reporting_year = int(DEMO_DATASET["reporting_year"])
-_default_reporting_year = _nearest_available_year(_available_years, _default_reporting_year)
-REPORTING_YEAR = int(st.sidebar.selectbox(
-    "Reporting Year",
-    options=_available_years,
-    index=_available_years.index(_default_reporting_year) if _default_reporting_year in _available_years else 0,
-    help="Select the reporting year for snapshot outputs. Scenario charts still show the full multi-year pathway.",
-    key="selected_reporting_year",
-))
-BASELINE_SCENARIO = "Current Policies"
+st.sidebar.header("🏢 Company")
+company_name = st.sidebar.text_input("Company Name", _dv("company_name", "Sample Company"))
+sector = st.sidebar.selectbox("Sector", ["Steel","Power","Cement","Oil & Gas","Manufacturing"],
+    index=["Steel","Power","Cement","Oil & Gas","Manufacturing"].index(_dv("sector","Steel")) if _d else 0)
+REPORTING_YEAR = st.sidebar.selectbox("Reporting Year", [2025,2030,2035,2040],
+    index=[2025,2030,2035,2040].index(_dv("reporting_year",2025)) if _d else 0)
+BASELINE_SCENARIO = st.sidebar.selectbox("Baseline Scenario",
+    ["Current Policies","Nationally Determined Contributions (NDCs)","Net Zero 2050"], index=0)
 default_correlation = SECTOR_CORRELATION.get(sector, 0.30)
 
-revenue_0           = float(DEMO_DATASET["revenue_0"])
-ebitda_margin_0     = float(DEMO_DATASET["ebitda_margin_0"])
-interest_payment    = float(DEMO_DATASET["interest_payment"])
-total_assets        = float(DEMO_DATASET["total_assets"])
-exposure_at_default = float(DEMO_DATASET["exposure_at_default"])
+st.sidebar.subheader("💰 Financials")
+revenue_0           = st.sidebar.number_input("Base Revenue (₹ Cr)",   value=_dv("revenue_0", 10000.0))
+ebitda_margin_0     = st.sidebar.slider("Base EBITDA Margin", 0.05, 0.40, _dv("ebitda_margin_0", 0.22))
+interest_payment    = st.sidebar.number_input("Annual Interest (₹ Cr)", value=_dv("interest_payment", 600.0))
+total_assets        = st.sidebar.number_input("Total Assets (₹ Cr)",    value=_dv("total_assets", 25000.0))
+exposure_at_default = st.sidebar.number_input("EAD (₹ Cr)",             value=_dv("exposure_at_default", 8000.0))
 
-scope1 = float(DEMO_DATASET["scope1"])
-scope2 = float(DEMO_DATASET["scope2"])
-scope3 = float(DEMO_DATASET["scope3"])
+st.sidebar.subheader("💨 Emissions (tCO₂e)")
+scope1 = st.sidebar.number_input("Scope 1", value=_dv("scope1", 2_000_000.0))
+scope2 = st.sidebar.number_input("Scope 2", value=_dv("scope2", 1_500_000.0))
+scope3 = st.sidebar.number_input("Scope 3", value=_dv("scope3", 1_500_000.0))
 TOTAL_EMISSIONS = scope1 + scope2 + scope3
-st.session_state["scope1"] = scope1
-st.session_state["scope2"] = scope2
-st.session_state["scope3"] = scope3
-high_carbon_assets = float(DEMO_DATASET["high_carbon_assets"])
+st.session_state["scope1"] = scope1; st.session_state["scope2"] = scope2; st.session_state["scope3"] = scope3
+high_carbon_assets = st.sidebar.number_input("High-Carbon Assets (₹ Cr)", value=_dv("high_carbon_assets", 6000.0))
 
-# All major modules are enabled for the locked demo.
-st.session_state["enable_transition"] = True
-st.session_state["enable_physical"]   = True
-st.session_state["enable_targets"]    = True
-st.session_state["enable_brsr"]       = True
+if st.sidebar.button("🤖 AI Parameter Suggestions"):
+    st.session_state["suggested_params"] = ai_calibrate_parameters(sector)
+    st.sidebar.success("Parameters applied.")
 
-USD_INR = 83.0
-US_CPI_2010_TO_2026 = 1.38
-CARBON_PRICE_INFLATION_FACTOR = US_CPI_2010_TO_2026
-carbon_pass_through = float(DEMO_DATASET["carbon_pass_through"])
-demand_elasticity = float(DEMO_DATASET["demand_elasticity"])
-price_elasticity = -0.10
-beta_carbon_transition = 1.35
-planned_capex = float(DEMO_DATASET["planned_capex"])
-abatement_cost = float(DEMO_DATASET["abatement_cost"])
-abatement_potential = float(DEMO_DATASET["abatement_potential"])
-base_pd = float(DEMO_DATASET["base_pd"])
-LGD_0 = float(DEMO_DATASET["lgd_0"])
-tax_rate = 0.25
-G = np.mean([0.7, 0.5, 0.4, 0.6])
+st.sidebar.subheader("⚙️ Modules")
+st.session_state["enable_transition"] = st.sidebar.checkbox("⚡ Transition Risk", value=True)
+st.session_state["enable_physical"]   = st.sidebar.checkbox("🌍 Physical Risk")
+st.session_state["enable_targets"]    = st.sidebar.checkbox("🎯 Transition Targets")
+st.session_state["enable_brsr"]       = st.sidebar.checkbox("📘 BRSR Diagnostics")
+
+# Results never auto-cleared on checkbox toggle.
+st.sidebar.divider()
+if st.session_state["enable_transition"]:
+    st.sidebar.divider()
+    st.sidebar.subheader("Transition Parameters")
+    USD_INR = st.sidebar.number_input("USD→INR Rate", value=83.0)
+    US_CPI_2010_TO_2026 = st.sidebar.number_input("US CPI Adj (2010→2026)", value=1.38, step=0.01,
+        help="Converts NGFS USD2010 → USD2026. ~1.38 for 2.0% avg annual US CPI.")
+    CARBON_PRICE_INFLATION_FACTOR = US_CPI_2010_TO_2026
+    sp = st.session_state.get("suggested_params", {})
+    carbon_pass_through = st.sidebar.slider("Carbon Pass-through", 0.1, 0.9,
+        float(_dv("carbon_pass_through", sp.get("carbon_pass_through", 0.5))))
+    demand_elasticity   = st.sidebar.slider("Demand Elasticity", -1.5, 0.2,
+        float(_dv("demand_elasticity", sp.get("demand_elasticity", -0.2))))
+    price_elasticity    = st.sidebar.slider("Price Elasticity", -0.5, 0.5,
+        float(sp.get("price_elasticity", 0.0)))
+    beta_carbon_transition = st.sidebar.slider("β_transition (Revenue)", 0.6, 1.6,
+        float(sp.get("beta_carbon_transition", 1.0)), 0.05,
+        help="Transition channel only. Separate from β_credit in SECTOR_CREDIT_PARAMS.")
+    planned_capex       = st.sidebar.number_input("Planned CAPEX (₹ Cr)",
+        value=float(_dv("planned_capex", 1200.0)))
+    abatement_cost      = st.sidebar.number_input("Abatement Cost (₹/tCO₂)",
+        value=float(_dv("abatement_cost", 4500.0)))
+    abatement_potential = st.sidebar.slider("Abatement Potential", 0.05, 0.80,
+        float(_dv("abatement_potential", sp.get("abatement_potential", 0.3))))
+    base_pd  = st.sidebar.slider("Base PD", 0.0, 0.10, float(_dv("base_pd", 0.015)))
+    LGD_0    = st.sidebar.slider("Base LGD", 0.0, 1.0, float(_dv("lgd_0", 0.45)))
+    tax_rate = st.sidebar.slider("Tax Rate", 0.0, 0.50, 0.25)
+    g1 = st.sidebar.slider("Board Oversight", 0.0, 1.0, 0.7)
+    g2 = st.sidebar.slider("CAPEX Alignment", 0.0, 1.0, 0.5)
+    g3 = st.sidebar.slider("Incentives", 0.0, 1.0, 0.4)
+    g4 = st.sidebar.slider("Internal Carbon Price", 0.0, 1.0, 0.6)
+    G = np.mean([g1, g2, g3, g4])
+else:
+    USD_INR=83.0; CARBON_PRICE_INFLATION_FACTOR=1.38; US_CPI_2010_TO_2026=1.38
+    carbon_pass_through=0.5; demand_elasticity=-0.2; price_elasticity=0.0
+    beta_carbon_transition=1.0; planned_capex=1200.0; abatement_cost=4500.0
+    abatement_potential=0.3; base_pd=0.015; LGD_0=0.45; tax_rate=0.25; G=0.575
 
 sector_params      = SECTOR_CREDIT_PARAMS.get(sector,SECTOR_CREDIT_PARAMS["Manufacturing"])
 alpha_dscr         = sector_params["alpha_dscr"]
@@ -1754,85 +1627,275 @@ MC_CARBON_VOL=mc_params["carbon_vol"]; MC_PHYS_VOL=mc_params["physical_vol"]; MC
 CLIMATE_DRIVER_VOL = np.array([MC_CARBON_VOL,MC_PHYS_VOL,MC_GDP_VOL])
 CLIMATE_DRIVER_COV = np.outer(CLIMATE_DRIVER_VOL,CLIMATE_DRIVER_VOL)*CLIMATE_DRIVER_CORR
 
-st.sidebar.markdown(f"""
-<div style='background:{C['card']};border:1px solid {C['bg_ocean']};border-radius:8px;padding:10px 12px;margin-top:12px;font-size:10px;line-height:1.7;color:{C['slate']};'>
-<b style='color:{C['accent2']};'>Demo inputs</b><br>
-Reporting Year: {REPORTING_YEAR}<br>
-Revenue: ₹{revenue_0:,.0f} Cr<br>
-EAD: ₹{exposure_at_default:,.0f} Cr<br>
-Emissions: {TOTAL_EMISSIONS/1e6:.1f} Mn tCO₂e<br>
-Base PD: {base_pd:.2%} · LGD: {LGD_0:.0%}
-</div>
-""", unsafe_allow_html=True)
-
 # ============================================================
-# PUBLIC DEMO EXPORT — summary only, full report by request
+# SIDEBAR — DOWNLOAD ALL RESULTS
 # ============================================================
 st.sidebar.divider()
-st.sidebar.markdown(f"<div style='font-size:12px;font-weight:600;color:{C['accent2']};text-transform:uppercase;letter-spacing:.06em;'>📥 Demo Export</div>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<div style='font-size:12px;font-weight:600;color:{C['accent2']};text-transform:uppercase;letter-spacing:.06em;'>📥 Export Results</div>", unsafe_allow_html=True)
 
 any_ran = any(st.session_state.get(k, False) for k in ["transition_ran","physical_ran","brsr_ran","integrated_ran"])
+
 if any_ran:
+    import io
+
+    def _build_excel_export():
+        """
+        Build a multi-sheet Excel workbook containing:
+        - Summary sheet (all key metrics + model governance)
+        - Assumptions sheet (all user inputs)
+        - Transition Results sheet
+        - Physical Risk sheet (if run)
+        - BRSR sheet (if run)
+        - Integrated Risk sheet (if run)
+        - Monte Carlo sheet (if run)
+        - Validation sheet (if run)
+        """
+        buf = io.BytesIO()
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            from openpyxl.utils.dataframe import dataframe_to_rows
+        except ImportError:
+            return None  # openpyxl not installed
+
+        wb = openpyxl.Workbook()
+
+        HDR_FILL  = PatternFill("solid", fgColor="062F2E")
+        HDR_FONT  = Font(bold=True, color="00F5D4", size=11)
+        VAL_FONT  = Font(color="E2E8F0", size=10)
+        TILE_FILL = PatternFill("solid", fgColor="0B4D4B")
+        TILE_FONT = Font(bold=True, color="22D3EE", size=12)
+        thin_side = Side(style="thin", color="115E6D")
+        THIN_BORDER = Border(bottom=thin_side)
+
+        def _write_df(ws, df, start_row=1, start_col=1):
+            """Write a DataFrame to a worksheet with header styling."""
+            for ci, col in enumerate(df.columns, start_col):
+                cell = ws.cell(row=start_row, column=ci, value=col)
+                cell.fill = HDR_FILL; cell.font = HDR_FONT
+                cell.alignment = Alignment(horizontal="center")
+            for ri, row in enumerate(df.itertuples(index=False), start_row+1):
+                for ci, val in enumerate(row, start_col):
+                    cell = ws.cell(row=ri, column=ci, value=val)
+                    cell.font = VAL_FONT
+                    cell.border = THIN_BORDER
+            for ci in range(start_col, start_col+len(df.columns)):
+                ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = 22
+
+        def _title(ws, title, row=1):
+            cell = ws.cell(row=row, column=1, value=title)
+            cell.fill = TILE_FILL; cell.font = TILE_FONT
+
+        # ── Sheet 1: Summary ──
+        ws_sum = wb.active; ws_sum.title = "Summary"
+        ws_sum.sheet_view.showGridLines = False
+        _title(ws_sum, f"ICCRE v{MODEL_VERSION} — Climate Risk Summary: {company_name}")
+        gov_rows = [
+            ("Model Version", MODEL_VERSION), ("Engine", ENGINE_BUILD),
+            ("Model Use", MODEL_USE_NOTE),
+            ("NGFS Data", NGFS_DATA_VERSION), ("Build Date", MODEL_BUILD_DATE),
+            ("Company", company_name), ("Sector", sector),
+            ("Reporting Year", REPORTING_YEAR), ("Baseline Scenario", BASELINE_SCENARIO),
+            ("Export Timestamp", datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")),
+        ]
+        for i,(k,v) in enumerate(gov_rows, 3):
+            ws_sum.cell(row=i, column=1, value=k).font = Font(bold=True, color="94A3B8")
+            ws_sum.cell(row=i, column=2, value=str(v)).font = Font(color="E2E8F0")
+
+        row_s = 14
+        df_sum_data = []
+        if st.session_state.get("transition_ran"):
+            df_t_x = st.session_state.get("df_transition")
+            if isinstance(df_t_x, pd.DataFrame) and not df_t_x.empty:
+                df_sum_data.append({"Metric":"Peak Transition PD","Value":f"{df_t_x['PD_Transition'].max():.4f}"})
+                df_sum_data.append({"Metric":"Max ECL (₹ Cr)","Value":f"{df_t_x['ECL_Transition'].max():.2f}"})
+                df_sum_data.append({"Metric":"Min DSCR","Value":f"{df_t_x['DSCR'].min():.3f}"})
+                df_sum_data.append({"Metric":"Max Stranded Assets (₹ Cr)","Value":f"{df_t_x['Stranded_Assets'].max():.0f}"})
+        if st.session_state.get("physical_ran"):
+            ps_x = st.session_state.get("phys_summary", {})
+            if ps_x:
+                df_sum_data.append({"Metric":"Physical Risk PD","Value":f"{ps_x.get('Physical Risk PD',0):.4f}"})
+                df_sum_data.append({"Metric":"Physical ΔECL (₹ Cr)","Value":f"{ps_x.get('ΔECL (₹ Cr)',0):.2f}"})
+        if st.session_state.get("brsr_ran"):
+            df_sum_data.append({"Metric":"BRSR PD Uplift (bps)","Value":f"{st.session_state.get('brsr_pd_adj',0)*10000:.1f}"})
+        if st.session_state.get("mc_results"):
+            mc_x = st.session_state["mc_results"]
+            df_sum_data.append({"Metric":"MC Mean PD","Value":f"{mc_x.get('Mean_PD',0):.4f}"})
+            df_sum_data.append({"Metric":"MC Climate VaR 95% (₹ Cr)","Value":f"{mc_x.get('ECL_95',0):.2f}"})
+        if df_sum_data:
+            _write_df(ws_sum, pd.DataFrame(df_sum_data), start_row=row_s)
+
+        # ── Sheet 2: Assumptions ──
+        ws_ass = wb.create_sheet("Assumptions")
+        ws_ass.sheet_view.showGridLines = False
+        _title(ws_ass, "Model Inputs & Assumptions")
+        assumptions = [
+            ("Company Name", company_name), ("Sector", sector),
+            ("Reporting Year", REPORTING_YEAR), ("Baseline Scenario", BASELINE_SCENARIO),
+            ("Base Revenue (₹ Cr)", revenue_0), ("Base EBITDA Margin", ebitda_margin_0),
+            ("Annual Interest (₹ Cr)", interest_payment), ("Total Assets (₹ Cr)", total_assets),
+            ("EAD (₹ Cr)", exposure_at_default), ("Scope 1 Emissions (tCO₂e)", scope1),
+            ("Scope 2 Emissions (tCO₂e)", scope2), ("Scope 3 Emissions (tCO₂e)", scope3),
+            ("High-Carbon Assets (₹ Cr)", high_carbon_assets),
+            ("Base PD", base_pd), ("Base LGD", LGD_0),
+            ("Carbon Pass-Through", carbon_pass_through),
+            ("Demand Elasticity", demand_elasticity),
+            ("Beta Carbon (Transition)", beta_carbon_transition),
+            ("Alpha DSCR (Sector)", alpha_dscr),
+            ("Beta Carbon Credit (Sector)", beta_carbon_credit),
+            ("USD/INR Rate", USD_INR),
+            ("CPI Adjustment (2010→2026)", CARBON_PRICE_INFLATION_FACTOR),
+            ("Governance Score (G)", round(G, 3)),
+            ("NGFS Data Version", NGFS_DATA_VERSION),
+            ("Model Version", MODEL_VERSION),
+            ("Model Limitation Note", MODEL_LIMITATION_NOTE),
+            ("Scenario Weighting", SCENARIO_WEIGHTING_METHOD),
+        ]
+        df_ass = pd.DataFrame(assumptions, columns=["Parameter", "Value"])
+        _write_df(ws_ass, df_ass, start_row=3)
+
+        # ── Sheet 3: Transition Results ──
+        if st.session_state.get("transition_ran"):
+            df_t_x = st.session_state.get("df_transition")
+            if isinstance(df_t_x, pd.DataFrame) and not df_t_x.empty:
+                ws_tr = wb.create_sheet("Transition Results")
+                ws_tr.sheet_view.showGridLines = False
+                _title(ws_tr, "Transition Risk Engine Results — All Scenarios")
+                _write_df(ws_tr, df_t_x.round(5), start_row=3)
+
+        # ── Sheet 4: Physical Risk ──
+        if st.session_state.get("physical_ran"):
+            phys_a = st.session_state.get("phys_assets")
+            phys_p = st.session_state.get("df_physical_projection")
+            if isinstance(phys_a, pd.DataFrame) and not phys_a.empty:
+                ws_ph = wb.create_sheet("Physical Risk")
+                ws_ph.sheet_view.showGridLines = False
+                _title(ws_ph, "Physical Risk — Asset-Level Results")
+                _write_df(ws_ph, phys_a.round(4), start_row=3)
+                if isinstance(phys_p, pd.DataFrame) and not phys_p.empty:
+                    _title(ws_ph, "NGFS Physical Projections", row=len(phys_a)+6)
+                    _write_df(ws_ph, phys_p.round(4), start_row=len(phys_a)+8)
+
+        # ── Sheet 5: BRSR ──
+        if st.session_state.get("brsr_ran"):
+            bs_x = st.session_state.get("brsr_summary")
+            if isinstance(bs_x, pd.DataFrame) and not bs_x.empty:
+                ws_br = wb.create_sheet("BRSR Diagnostics")
+                ws_br.sheet_view.showGridLines = False
+                _title(ws_br, "BRSR Core Diagnostics")
+                _write_df(ws_br, bs_x.T.reset_index().rename(columns={"index":"Indicator",0:"Value"}), start_row=3)
+                bf_x = st.session_state.get("brsr_flags")
+                if isinstance(bf_x, pd.DataFrame) and not bf_x.empty:
+                    _title(ws_br, "Active BRSR Flags", row=len(bs_x.T)+7)
+                    _write_df(ws_br, bf_x, start_row=len(bs_x.T)+9)
+
+        # ── Sheet 6: Integrated Risk ──
+        if st.session_state.get("integrated_ran"):
+            df_int_x = st.session_state.get("df_integrated_summary")
+            if isinstance(df_int_x, pd.DataFrame) and not df_int_x.empty:
+                ws_int = wb.create_sheet("Integrated Risk")
+                ws_int.sheet_view.showGridLines = False
+                _title(ws_int, "Integrated Climate Risk — ISSB S2 Aligned Summary")
+                _write_df(ws_int, df_int_x, start_row=3)
+
+        # ── Sheet 7: Monte Carlo ──
+        mc_x = st.session_state.get("mc_results")
+        if mc_x:
+            ws_mc = wb.create_sheet("Monte Carlo")
+            ws_mc.sheet_view.showGridLines = False
+            _title(ws_mc, "Monte Carlo Climate Stress Results")
+            mc_df = pd.DataFrame([{"Metric": k, "Value": round(v, 5)} for k, v in mc_x.items()])
+            _write_df(ws_mc, mc_df, start_row=3)
+
+        # ── Sheet 8: Validation ──
+        val_x = st.session_state.get("validation_results")
+        if val_x:
+            ws_vl = wb.create_sheet("Validation")
+            ws_vl.sheet_view.showGridLines = False
+            _title(ws_vl, "Model Validation Results")
+            vl_df = pd.DataFrame([{"Metric": k, "Value": round(v, 6) if isinstance(v, float) else v} for k, v in val_x.items()])
+            _write_df(ws_vl, vl_df, start_row=3)
+
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
+    xlsx_bytes = _build_excel_export()
+    if xlsx_bytes:
+        st.sidebar.download_button(
+            label="⬇️ Download Full Report (Excel)",
+            data=xlsx_bytes,
+            file_name=f"ICCRE_{company_name.replace(' ','_')}_{REPORTING_YEAR}_{datetime.utcnow().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+            help="Downloads all results, assumptions, and model governance in a multi-sheet Excel workbook",
+        )
+    else:
+        st.sidebar.caption("Install openpyxl for Excel export: `pip install openpyxl`")
+
+    # JSON export (always available, no extra dependency)
     import json as _json
     _export_payload = {
-        "metadata": {
-            "model_version": MODEL_VERSION,
-            "company": company_name,
-            "sector": sector,
-            "reporting_year": REPORTING_YEAR,
-            "demo_note": "Public demo; fictional company; inputs locked.",
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-        "reporting_year_snapshot": {},
-        "multi_year_scenario_results": {},
-        "model_use_note": MODEL_USE_NOTE,
+        "metadata": {"model_version": MODEL_VERSION, "company": company_name,
+                     "sector": sector, "reporting_year": REPORTING_YEAR,
+                     "timestamp": datetime.utcnow().isoformat()},
+        "assumptions": {"revenue": revenue_0, "ebitda_margin": ebitda_margin_0,
+                        "interest": interest_payment, "ead": exposure_at_default,
+                        "scope1": scope1, "scope2": scope2, "scope3": scope3,
+                        "base_pd": base_pd, "lgd": LGD_0},
     }
-    if isinstance(st.session_state.get("df_transition"), pd.DataFrame) and not st.session_state["df_transition"].empty:
-        _dt = st.session_state["df_transition"]
-        _dt_ry, _actual_ry = reporting_year_slice(_dt, REPORTING_YEAR)
-        if isinstance(_dt_ry, pd.DataFrame) and not _dt_ry.empty:
-            _ry_worst = _dt_ry.loc[_dt_ry["PD_Transition"].idxmax()]
-            _export_payload["reporting_year_snapshot"].update({
-                "displayed_year": int(_actual_ry),
-                "worst_reporting_year_scenario": str(_ry_worst["Scenario"]),
-                "transition_pd": float(_ry_worst["PD_Transition"]),
-                "transition_ecl_cr": float(_ry_worst["ECL_Transition"]),
-                "dscr": float(_ry_worst["DSCR"]),
-                "carbon_burden": float(_ry_worst["Carbon_Burden"]),
-            })
-        _export_payload["multi_year_scenario_results"].update({
-            "peak_transition_pd": float(_dt["PD_Transition"].max()),
-            "peak_transition_ecl_cr": float(_dt["ECL_Transition"].max()),
-            "worst_dscr": float(_dt["DSCR"].min()),
-        })
-    if isinstance(st.session_state.get("phys_summary"), dict):
-        _export_payload["reporting_year_snapshot"].update(st.session_state["phys_summary"])
-    if st.session_state.get("brsr_ran"):
-        _export_payload["reporting_year_snapshot"]["brsr_governance_signal_bps"] = float(st.session_state.get("brsr_pd_adj",0)*10000)
-    if isinstance(st.session_state.get("df_integrated_summary"), pd.DataFrame):
+    if st.session_state.get("df_integrated_summary") is not None:
         _export_payload["integrated_risk"] = st.session_state["df_integrated_summary"].to_dict("records")
+    if st.session_state.get("mc_results"):
+        _export_payload["monte_carlo"] = st.session_state["mc_results"]
 
     st.sidebar.download_button(
-        label="⬇️ Download Demo Summary (JSON)",
+        label="⬇️ Download Summary (JSON)",
         data=_json.dumps(_export_payload, indent=2, default=str).encode(),
-        file_name=f"ICCRE_demo_summary_{REPORTING_YEAR}.json",
+        file_name=f"ICCRE_{company_name.replace(' ','_')}_{REPORTING_YEAR}.json",
         mime="application/json",
         width="stretch",
-        help="Public demo summary only. Full Excel/model reports are available for pilot users.",
+        help="Lightweight JSON export of key results and assumptions",
     )
 else:
-    st.sidebar.caption("Run the demo to enable summary export.")
+    st.sidebar.caption("Run at least one engine to enable exports.")
 
+# ── PRICING / TIER FOOTER ────────────────────────────────────
+st.sidebar.divider()
 st.sidebar.markdown(f"""
-<div style="background:{C['card']};border:1px solid {C['bg_ocean']};border-radius:8px;padding:12px 14px;margin-top:10px;">
-  <div style="font-size:11px;font-weight:700;color:{C['accent2']};text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;">Want the full report?</div>
-  <div style="font-size:10px;color:{C['slate']};margin-bottom:8px;line-height:1.6;">
-    Full Excel reports, custom company inputs, calibration, portfolio analysis and model documentation are available for serious pilot users.
+<div style="background:{C['card']};border:1px solid {C['bg_ocean']};border-radius:8px;
+            padding:12px 14px;margin-bottom:4px;">
+  <div style="font-size:11px;font-weight:700;color:{C['accent2']};text-transform:uppercase;
+              letter-spacing:.07em;margin-bottom:8px;">Access Tiers</div>
+
+  <div style="font-size:10px;color:{C['slate']};margin-bottom:6px;">
+    <span style="color:{C['mint']};font-weight:600;">✓ Free</span>
+    &nbsp;— Full access, single user<br>
+    All 11 modules · Excel &amp; JSON export
   </div>
-  <a href="mailto:{CONTACT_EMAIL}?subject=ICCRE Pilot Access Request"
-     style="display:block;background:{C['accent']};color:{C['bg_dark']};text-align:center;padding:6px 0;border-radius:6px;font-size:11px;font-weight:700;text-decoration:none;letter-spacing:.02em;">
-    ✉ Request Pilot Access
+
+  <div style="font-size:10px;color:{C['slate']};margin-bottom:6px;">
+    <span style="color:{C['amber']};font-weight:600;">₹ 2–3 L / year</span>
+    &nbsp;— Professional<br>
+    Custom calibration · Email support
+  </div>
+
+  <div style="font-size:10px;color:{C['slate']};margin-bottom:8px;">
+    <span style="color:{C['coral']};font-weight:600;">₹ 12–18 L / year</span>
+    &nbsp;— Enterprise<br>
+    Multi-user · API · White-label · SLA
+  </div>
+
+  <a href="mailto:{CONTACT_EMAIL}?subject=ICCRE Access Request"
+     style="display:block;background:{C['accent']};color:{C['bg_dark']};
+            text-align:center;padding:6px 0;border-radius:6px;font-size:11px;
+            font-weight:700;text-decoration:none;letter-spacing:.02em;">
+    ✉ Request Access / Demo
   </a>
+</div>
+
+<div style="font-size:9px;color:{C['bg_ocean']};text-align:center;margin-top:4px;">
+  {PRODUCT_URL} · {CONTACT_EMAIL}
 </div>
 """, unsafe_allow_html=True)
 
@@ -1989,10 +2052,10 @@ def project_physical_risk_ngfs(df_ngfs_temp, baseline_damage_index, baseline_rev
 
 
 # ============================================================
-# ONE-CLICK PUBLIC DEMO RUNNER
+# OPTIONAL ONE-CLICK SAMPLE RUNNER
 # ============================================================
-def _run_full_public_demo():
-    """Populate all major demo outputs for the locked fictional company."""
+def _run_full_sample_case():
+    """Populate all major outputs for the sample fictional company."""
     selected_scenarios = sorted(df_long["Scenario"].unique())
     df_transition = run_transition_engine(
         df_long, selected_scenarios, revenue_0, ebitda_margin_0,
@@ -2012,7 +2075,7 @@ def _run_full_public_demo():
         "Stranded_Assets":"max","CAPEX_Gap":"max",
     }).round(4).reset_index()
 
-    # Demo physical risk: locked assets, proportional EAD, p90 flood extraction.
+    # Sample physical risk: proportional EAD, p90 flood extraction.
     df = pd.DataFrame({
         "asset_id":["A1","A2","A3"],
         "asset_type":["Steel Plant","Rolling Mill","Port Logistics Yard"],
@@ -2097,7 +2160,7 @@ def _run_full_public_demo():
     st.session_state["df_physical_projection"]=df_phys_proj
     st.session_state["physical_ran"]=True
 
-    # Locked BRSR demo diagnostics.
+    # Sample BRSR diagnostics.
     ghg_bench=SECTOR_GHG_BENCHMARKS.get(sector,SECTOR_GHG_BENCHMARKS["Manufacturing"])
     en_bench=SECTOR_ENERGY_BENCHMARKS.get(sector,SECTOR_ENERGY_BENCHMARKS["Manufacturing"])
     total_energy_kwh=1_000_000_000; renewable_share_pct=15; total_water_m3=50_000_000; water_stress_region="High"; recycled_water_pct=10; total_waste_mt=100_000; hazardous_waste_pct=20; target_coverage_pct=50
@@ -2150,10 +2213,10 @@ def _run_full_public_demo():
         {"Metric":"CAPEX Gap / Surplus (₹ Cr)","Value":_fmt_capex_position(df_transition['CAPEX_Gap'].max()),"ISSB S2":"§14"},
     ])
     st.session_state["integrated_ran"]=True
-    st.session_state["run_full_demo_requested"]=False
+    st.session_state["run_full_sample_requested"]=False
 
 
-# One-click full demo auto-run removed for public demo. Modules are run from their own tabs and cached until reset.
+# One-click sample auto-run is disabled. Modules are run from their own tabs and cached until reset.
 
 # ============================================================
 # TAB LAYOUT
@@ -2172,9 +2235,9 @@ def _run_full_public_demo():
     "🧩 Integrated Risk",
     "📈 Plots",
     "🤖 AI Narrative",
-    "🛡️ Model Governance",
-    "🧪 Pilot Readiness",
-    "🔒 Enterprise Preview",
+    "📖 Methodology",
+    "🔬 Validation",
+    "⚙️ Calibration",
     "🚀 Get Access",
 ])
 
@@ -2445,14 +2508,14 @@ with transition_tab:
     else:
         # Public mode: internal correction notes hidden.
 
-        all_scenarios = PUBLIC_DEMO_SCENARIOS if PUBLIC_DEMO_SCENARIOS else sorted(df_long["Scenario"].unique())
+        all_scenarios = sorted(df_long["Scenario"].unique())
         selected_scenarios = st.multiselect(
-            "Public Demo Scenarios",
+            "NGFS Scenarios",
             options=all_scenarios,
             default=all_scenarios,
-            help="Public demo is limited to Current Policies, NDCs and Below 2°C scenarios."
+            help="Select one or more NGFS scenarios for the analysis."
         )
-        st.caption("Scenario outputs use only: Current Policies, NDCs and Below 2°C. No other NGFS scenarios are shown in this demo.")
+        
         run_btn = st.button("▶ Run Transition Risk Engine",type="primary")
 
         if not run_btn:
@@ -2580,7 +2643,7 @@ with physical_tab:
             "latitude":[22.80,23.55,20.32],"longitude":[86.20,87.32,86.61],
             "revenue_inr_cr":[3500.0,2000.0,1200.0],
             "base_pd":[0.015,0.015,0.015],"lgd":[0.45,0.45,0.45],
-        }),num_rows="fixed",width="stretch",disabled=True)
+        }),num_rows="dynamic",width="stretch")
 
         fc1,fc2 = st.columns(2)
         EBITDA_MARGIN_PHYS = float(fc1.number_input("EBITDA Margin",value=float(ebitda_margin_0),step=0.01,key="phys_em"))
@@ -3667,23 +3730,6 @@ with brsr_tab:
         has_net_zero_target =bg3.checkbox("Long-term Climate Target",value=False,key="brsr_nz")
         has_cbam            =bg4.checkbox("EU/UK Export Exposure",value=False,key="brsr_cb")
 
-        # Locked public demo: BRSR inputs are fixed to the fictional company case.
-        # Widgets above are displayed for product feel, but public demo output remains standardized.
-        total_energy_kwh = 1_000_000_000
-        renewable_share_pct = 15
-        has_verified_data = False
-        total_water_m3 = 50_000_000
-        water_stress_region = "High"
-        recycled_water_pct = 10
-        total_waste_mt = 100_000
-        hazardous_waste_pct = 20
-        target_coverage_pct = 50
-        has_scope3 = True
-        has_board_oversight = False
-        has_net_zero_target = False
-        has_cbam = False
-        st.caption("🔒 Public demo uses locked BRSR inputs for the fictional company. Custom inputs are available in pilot access.")
-
         with st.expander("📈 3-Year Emissions Trend (optional)"):
             te1,te2,te3=st.columns(3)
             s1_y0=te1.number_input("Scope 1 (2yr ago)",value=float(scope1*1.08),key="brsr_s1y0")
@@ -4523,156 +4569,793 @@ The 3 most dangerous strategic mistakes companies in this situation make. Be spe
     # TAB 8 — METHODOLOGY  (auditor-appropriate, IP-protected)
     # ============================================================
 with methodology_tab:
-    st.markdown(f"<h2 style='color:{C['white']}'>🛡️ Model Governance</h2>", unsafe_allow_html=True)
-    st.caption("Public demo governance view · IP-protected · fictional company only")
-    st.info(PUBLIC_DEMO_NOTE)
+    st.markdown(f"<h2 style='color:{C['white']}'>📖 Model Methodology</h2>", unsafe_allow_html=True)
+    st.caption(f"ICCRE v{MODEL_VERSION} · {ENGINE_BUILD} · Build {MODEL_BUILD_DATE} · {NGFS_DATA_VERSION}")
 
-    scope_badge("single", f"Reporting-year snapshot results use the locked Bharat Steel Industries Ltd inputs for {REPORTING_YEAR}.")
-    scope_badge("multi", "Scenario charts are forward-looking NGFS pathway projections across selected years.")
-
-    st.markdown("""
-    **What this demo shows**
-    - How climate transition pathways can be translated into financial stress indicators.
-    - How BRSR-style operational signals can support a governance/readiness risk view.
-    - How physical exposure screening can be linked to asset-level business interruption.
-    - How board-level risk summaries can be produced for decision support.
-
-    **What this public demo does not expose**
-    - Proprietary equations and coefficient values.
-    - Full calibration workflow and sector parameter registry.
-    - Full Excel model export and raw intermediate tables.
-    - Client-specific validation and governance pack.
-    """)
-
-    st.warning(
-        "This is a decision-support and scenario-analysis demo using fictional data. It is not financial, credit, investment, legal, or regulatory advice. "
-        "Production use requires independent review, calibration, and validation."
+    st.info(
+        "This section documents the model framework, key equations, regulatory alignment, "
+        "and known limitations for disclosure to model validators, auditors, and regulators. "
+        "Proprietary calibration data, sector-specific coefficients, and implementation details "
+        "are available under NDA on request."
     )
 
-with validation_tab:
-    st.markdown(f"<h2 style='color:{C['white']}'>🧪 Pilot Readiness</h2>", unsafe_allow_html=True)
-    st.caption("What serious users can evaluate in a private pilot")
-
-    st.markdown("""
-    **Recommended pilot validation checklist**
-
-    | Area | What we validate in pilot access |
-    |---|---|
-    | Data fit | Company financials, emissions, BRSR inputs, asset register |
-    | Scenario relevance | NGFS scenario selection and reporting-year assumptions |
-    | Credit-risk reasonableness | PD, ECL, DSCR and capital-signal interpretation |
-    | Physical-risk screening | Asset exposure, hazard layers, revenue-loss reasonableness |
-    | Governance | Model-use limitations, audit trail, and board-report wording |
-
-    Public demo validation is intentionally limited because the demo uses fictional locked data.
-    """)
-
-    st.success("For banks, NBFCs, consultants and investors: request a pilot to test your own company or portfolio data.")
-
-with calibration_tab:
-    st.markdown(f"<h2 style='color:{C['white']}'>🔒 Enterprise Preview</h2>", unsafe_allow_html=True)
-    st.caption("Advanced features available only in private pilot / enterprise access")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    with st.expander("📐 Model Purpose & Scope", expanded=True):
         st.markdown("""
-        **Calibration Pack**
-        - Sector parameter tuning
-        - Borrower-specific assumptions
-        - Historical comparison
-        - Challenger-model review
-        """)
-    with c2:
-        st.markdown("""
-        **Portfolio Pack**
-        - Multi-company upload
-        - Sector concentration
-        - Climate VaR
-        - Board dashboard
-        """)
-    with c3:
-        st.markdown("""
-        **Governance Pack**
-        - Model documentation
-        - Audit trail
-        - Scenario memo
-        - Exportable board report
+        **Purpose:** Quantify the financial impact of climate change on corporate credit risk under
+        forward-looking scenarios aligned with the Network for Greening the Financial System (NGFS).
+
+        **Primary outputs:** Probability of Default (PD), Loss Given Default (LGD), Expected Credit
+        Loss (ECL), Debt Service Coverage Ratio (DSCR), and capital adequacy metrics under three
+        NGFS climate scenarios.
+
+        **Regulatory frameworks:** ISSB IFRS S2 (§14–16), RBI Climate Risk Management Guidelines,
+        SEBI BRSR Core, Basel III capital adequacy, ICAAP.
+
+        **Covered sectors:** Steel · Power · Cement · Oil & Gas · Manufacturing
+
+        **Scenario coverage:** Current Policies (≈2.7°C) · NDCs (≈2.1°C) · Net Zero 2050 (≈1.5°C)
+
+        **Data vintage:** NGFS Phase III (2023). Short-term (2025–2030) scenarios available in Phase V.
         """)
 
-    st.markdown(f"""
-    <div style="background:{C['card']};border:1px solid {C['accent2']};border-radius:10px;padding:16px;margin-top:12px;">
-      <div style="font-size:16px;font-weight:700;color:{C['accent2']};">Request private pilot access</div>
-      <div style="font-size:12px;color:{C['slate']};margin-top:6px;">Email {CONTACT_EMAIL} with your organisation, use case and preferred pilot scope.</div>
-    </div>
-    """, unsafe_allow_html=True)
+    with st.expander("🔗 Climate-to-Credit Transmission Chain"):
+        st.markdown("""
+        The model follows a five-stage financial transmission chain:
+
+        **Stage 1 — Climate Scenario:** NGFS carbon price, GDP, and temperature pathways are
+        extracted for the selected scenario and projection year.
+
+        **Stage 2 — Revenue Impact:** Carbon costs and GDP shocks are transmitted to company
+        revenue through three independent channels: GDP macro sensitivity, demand elasticity
+        (volume reduction), and price elasticity (margin compression). A chronic physical
+        temperature effect also reduces revenue proportionally to warming above baseline.
+
+        **Stage 3 — EBITDA & DSCR:** Net carbon cost is deducted from EBITDA. A governance
+        quality adjustment reflects the management quality of the transition response.
+        A climate credit spread shock is applied to interest costs. DSCR is computed on the
+        stressed EBITDA and stressed interest.
+
+        **Stage 4 — Credit Model:** A structural logit PD model maps DSCR stress and carbon
+        burden directly to change in default probability. The model is derived from Merton's
+        structural credit framework adapted for climate-specific risk factors.
+
+        **Stage 5 — Integration & ECL:** Transition and physical PDs are combined using a
+        Gaussian copula accounting for cross-risk correlation. BRSR operational flags apply a bounded governance/readiness multiplier. Final simplified ECL = PD × LGD × EAD; scenario-weighted ECL is also shown for decision support.
+        """)
+
+    with st.expander("📐 Core Credit Model Equations"):
+        st.latex(r"\text{logit}(PD_t) = \text{logit}(PD_0)"
+                 r"+ \alpha_{DSCR}\cdot\underbrace{(1.5 - DSCR_t)}_{\text{signed gap}}"
+                 r"+ \beta_{credit}\cdot CB_t")
+        st.latex(r"PD_t = \sigma\bigl(\text{logit}(PD_t)\bigr), \quad PD_t \in [PD_{floor},\, PD_{cap}]")
+        st.markdown("""
+        Where:
+        - **α_DSCR** — sector-specific DSCR sensitivity parameter
+        - **DSCR gap** — signed deviation from 1.5× covenant threshold (positive = stress, negative = relief)
+        - **β_credit** — sector-specific carbon burden sensitivity parameter
+        - **CB_t** — carbon burden (net carbon cost / revenue) at time t
+        - **PD_floor = 0.05%**, **PD_cap = 35%** (regulatory prudence bounds)
+
+        The signed DSCR gap allows credit quality *improvement* for companies with DSCR > 1.5×,
+        consistent with structural credit theory (Merton, 1974).
+        """)
+
+    with st.expander("🌡️ Physical Risk Damage Function (v1.2)"):
+        st.latex(r"\text{Damage Multiplier} = 1 + 0.20 \cdot \Delta T + 0.04 \cdot \Delta T^2")
+        st.latex(r"\sigma_{\Delta T} = 0.08 \cdot \Delta T")
+        st.latex(r"P_{10} = \text{mult} - 1.645\,\sigma, \quad P_{90} = \text{mult} + 1.645\,\sigma")
+        st.markdown("""
+        The quadratic damage function is calibrated to economic damage literature consistent
+        climate damage literature but is not presented as an official IPCC formula. The linear term (0.20) captures proportional temperature-income
+        effects; the quadratic term (0.04) captures accelerating damages at higher warming levels.
+        Temperature anomaly ΔT is extracted from the same NGFS scenario pathway used by the
+        transition engine, ensuring scenario consistency.
+
+        Uncertainty bounds (P10–P90) grow with temperature anomaly, reflecting the greater
+        model uncertainty at higher warming levels.
+        """)
+
+    with st.expander("🔀 Gaussian Copula Integration"):
+        st.latex(r"PD_{copula} = \Phi_2\!\left(\Phi^{-1}(PD_T),\;\Phi^{-1}(PD_P),\;\rho\right)")
+        st.latex(r"PD_{integrated} = \min\!\left(PD_{copula} \times M_{BRSR},\; PD_{cap}\right)")
+        st.markdown("""
+        The bivariate Gaussian copula captures the statistical dependence between transition risk
+        and physical risk without assuming they are independent or perfectly correlated.
+        Sector-specific correlations ρ range from 0.25 (Manufacturing) to 0.40 (Oil & Gas),
+        reflecting the degree to which carbon-intensive sectors face both types of climate risk
+        simultaneously.
+
+        BRSR operational risk is treated as a bounded governance/readiness multiplier rather than a direct additive PD block. This reduces double-counting because weak BRSR readiness can overlap with transition preparedness, physical resilience, and management quality. The multiplier is transparently capped at +20% relative PD impact.
+        """)
+
+    with st.expander("📘 BRSR → Credit Risk Linkage"):
+        st.markdown("""
+        BRSR Core operational flags are mapped to a governance/readiness overlay that represents incremental credit risk from operational climate exposures. This linkage captures risks
+        outside the carbon-price transmission chain, including:
+
+        - Water scarcity exposure in high-stress regions
+        - Energy cost escalation from high fossil energy dependence
+        - Governance deficiencies that reduce management quality of climate transition
+        - Regulatory non-compliance risk under SEBI BRSR Core requirements
+
+        The overlay is conservative and transparent: each flag is treated independently, the raw score is capped, and integrated PD uses a bounded multiplier to avoid double-counting.
+        """)
+
+    with st.expander("🔄 v1.1 → v1.2 Model Corrections"):
+        st.markdown("""
+        Seven corrections were applied in v1.1. All are preserved in v1.2.
+
+        | Fix | Nature | Financial Impact |
+        |-----|--------|-----------------|
+        | FIX-01 | β_carbon transition/credit separation | Prevents slider from overriding structural model |
+        | FIX-02 | Physical double-count removed | Reduces PD over-estimation in high-warming scenarios |
+        | FIX-03 | Revenue denominator stabilised | Removes order-of-operations sensitivity |
+        | FIX-04 | Signed DSCR gap | Credit relief for strong companies (DSCR > 1.5×) |
+        | FIX-05 | Two-step CPI conversion | Material for high-carbon-price scenarios |
+        | FIX-06 | GDP single transmission path | Removes systematic over-estimation in disorderly transition |
+        | FIX-07 | MC GDP sign consistency | MC outputs now match deterministic results |
+        """)
+
+
+    with st.expander("🧪 Zero-Cost Market-Readiness Upgrades in v1.3"):
+        st.markdown(f"""
+        v1.3 improves reliability without paid data dependencies:
+
+        - BRSR now enters integrated PD as a **bounded governance/readiness multiplier**, not a direct additive PD block.
+        - Integrated reporting now includes **scenario-weighted ECL** using transparent management weights: `{SCENARIO_WEIGHTS}`.
+        - Physical damage wording is corrected to **illustrative non-linear multiplier**, avoiding unsupported claims of an official IPCC formula.
+        - Exports and methodology now state the model-use limitation clearly: `{MODEL_USE_NOTE}`
+        - Model confidence is labelled based on whether calibration and validation evidence exists in the session.
+
+        These upgrades improve auditability and market readiness while keeping the tool free to operate.
+        """)
+
+    with st.expander("⚠️ Model Limitations & Assumptions"):
+        st.markdown("""
+        The following limitations apply and should be disclosed in any regulatory submission or client demo:
+
+        1. **Calibration:** Sector parameters are calibrated to published literature. Borrower-specific
+           historical default data has not been used unless the Calibration tab has been run with
+           uploaded observed PD data.
+
+        2. **Scope:** Five sectors are covered. Real estate, agriculture, infrastructure, and NBFC
+           are not currently modelled.
+
+        3. **Scenario horizon:** NGFS Phase III long-term scenarios are used. Short-term (2025–2030)
+           horizon analysis requires Phase V data (available separately).
+
+        4. **Static balance sheet:** The model does not account for dynamic feedback between climate
+           stress, asset values, and new lending capacity over multi-year horizons.
+
+        5. **Governance coefficient:** The 15% EBITDA governance sensitivity is expert-calibrated.
+           Users should adjust via the governance sliders based on company-specific evidence.
+
+        6. **Physical hazard data:** Results depend on the quality and resolution of GIS input data.
+           Results should be treated as indicative for assets with limited local hazard data.
+
+        7. **BRSR coefficients:** BRSR-to-PD spread linkages are analytically derived, not
+           backtested against observed defaults. They represent regulatory risk premia, not
+           historically observed credit loss differentials.
+        """)
+
+    with st.expander("📋 Scenario Registry"):
+        st.dataframe(
+            pd.DataFrame(SCENARIO_REGISTRY).T
+            .style.set_properties(**{"background-color": C["bg_dark"], "color": C["text"]}),
+            width="stretch"
+        )
+
+    with st.expander("🔢 Model Governance Record"):
+        gov_df = pd.DataFrame([{
+            "Parameter": "Model Version",       "Value": MODEL_VERSION},
+            {"Parameter": "Parameter Version",  "Value": PARAMETER_VERSION},
+            {"Parameter": "NGFS Data Version",  "Value": NGFS_DATA_VERSION},
+            {"Parameter": "Engine Name",         "Value": ENGINE_BUILD},
+            {"Parameter": "Build Date",          "Value": MODEL_BUILD_DATE},
+            {"Parameter": "Run Log Location",    "Value": "logs/run_log.csv"},
+            {"Parameter": "Audit Trail",         "Value": "SHA-256 run hash per execution"},
+            {"Parameter": "Regulatory Basis",    "Value": "ISSB S2 · RBI 2024 Draft · SEBI BRSR Core · NGFS PIII"},
+        ])
+        st.dataframe(gov_df.style.set_properties(**{"background-color": C["bg_dark"], "color": C["text"]}),
+            width="stretch", hide_index=True)
 
 # ============================================================
-# GET ACCESS TAB — public demo CTA
+# TAB 9 — VALIDATION  (improved)
+# ============================================================
+with validation_tab:
+    st.markdown(f"<h2 style='color:{C['white']}'>🔬 Model Validation</h2>", unsafe_allow_html=True)
+    st.caption("Backtest model-implied PD against observed default rates · Bias detection · Error diagnostics")
+
+    if not st.session_state.get("transition_ran", False):
+        st.info("Run Transition Risk Engine first.")
+    else:
+
+        # ── GUIDANCE ──
+        with st.expander("📋 How to use this tab", expanded=False):
+            st.markdown("""
+            **Purpose:** Test whether the model's projected PD matches historically observed default rates
+            for comparable borrowers or sector benchmarks.
+
+            **What you need:** A CSV file with at minimum two columns:
+            - `Year` — the calendar year (e.g. 2019, 2020, 2021)
+            - `Observed_PD` — the observed default rate for that year (decimal, e.g. 0.025 = 2.5%)
+
+            **Optional columns:**
+            - `Observed_ECL` — observed credit loss (₹ Cr) — used for ECL-level validation
+            - `Observed_DSCR` — observed DSCR — used for transmission chain validation
+
+            **Data sources (India):** CRISIL default studies · RBI Trend & Progress report (sector NPAs)
+            · IBA credit data · Prowess/CMIE database
+
+            **Interpretation:**
+            - RMSE < 1% — Strong calibration, no action needed
+            - RMSE 1–3% — Moderate error, recalibration recommended (use Calibration tab)
+            - RMSE > 3% — High error, structural review required
+            - Positive Bias — Model systematically over-estimates PD (conservative)
+            - Negative Bias — Model systematically under-estimates PD (optimistic — investigate)
+            """)
+
+        # ── FILE UPLOAD ──
+        st.subheader("📂 Upload Historical Observations")
+        ufile = st.file_uploader("CSV file (Year, Observed_PD required)", type=["csv"])
+
+        if ufile:
+            df_hist = pd.read_csv(ufile)
+            st.session_state["historical_data"] = df_hist
+
+            if not {"Year", "Observed_PD"}.issubset(df_hist.columns):
+                st.error("CSV must contain: `Year`, `Observed_PD`")
+                st.stop()
+
+            df_hist["Year"] = df_hist["Year"].astype(int)
+            df_hist["Observed_PD"] = pd.to_numeric(df_hist["Observed_PD"], errors="coerce")
+            df_hist = df_hist.dropna(subset=["Observed_PD"])
+
+            # Select scenario to validate against
+            df_trans_v = st.session_state.get("df_transition")
+            scens_v = sorted(df_trans_v["Scenario"].unique())
+            val_scen = st.selectbox("Validate against scenario", scens_v, key="val_scen")
+
+            df_mod_agg = (df_trans_v[df_trans_v["Scenario"] == val_scen]
+                .groupby("Year")["PD_Transition"].max().reset_index()
+                .rename(columns={"PD_Transition": "Model_PD"}))
+            df_cmp = df_hist.merge(df_mod_agg, on="Year", how="inner")
+
+            if df_cmp.empty:
+                st.warning("No overlapping years between uploaded data and model output.")
+                st.stop()
+
+            # ── METRICS ──
+            df_cmp["Error"]    = df_cmp["Model_PD"] - df_cmp["Observed_PD"]
+            df_cmp["AbsError"] = df_cmp["Error"].abs()
+            df_cmp["RelError"] = df_cmp["AbsError"] / df_cmp["Observed_PD"].replace(0, np.nan)
+            mae   = df_cmp["AbsError"].mean()
+            rmse  = np.sqrt((df_cmp["Error"]**2).mean())
+            bias  = df_cmp["Error"].mean()
+            mape  = df_cmp["RelError"].mean() * 100
+
+            # Signal
+            if rmse < 0.01:   val_signal = "✅ Strong";   sig_color = C["mint"]
+            elif rmse < 0.03: val_signal = "⚠️ Moderate"; sig_color = C["amber"]
+            else:             val_signal = "❌ High Error"; sig_color = C["coral"]
+
+            bias_signal = ("Conservative (over-estimates risk)" if bias > 0.005
+                           else "Optimistic (under-estimates risk)" if bias < -0.005
+                           else "Unbiased")
+
+            # KPI row
+            v1, v2, v3, v4, v5 = st.columns(5)
+            v1.metric("Calibration Signal", val_signal)
+            v2.metric("MAE",  f"{mae:.4f}",  help="Mean Absolute Error")
+            v3.metric("RMSE", f"{rmse:.4f}", help="Root Mean Squared Error — primary metric")
+            v4.metric("Bias", f"{bias:+.4f}", help="Positive = model over-estimates PD")
+            v5.metric("MAPE", f"{mape:.1f}%", help="Mean Absolute Percentage Error")
+
+            st.markdown(
+                f"<div style='background:{C['card']};border-left:3px solid {sig_color};"
+                f"border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;'>"
+                f"<strong style='color:{sig_color};'>{val_signal}</strong> &nbsp;·&nbsp; "
+                f"Bias direction: <strong>{bias_signal}</strong></div>",
+                unsafe_allow_html=True
+            )
+
+            # ── CHARTS ──
+            st.subheader("📈 Model vs Observed PD")
+            fig_v1 = make_subplots(rows=1, cols=2,
+                subplot_titles=("PD Trajectory: Model vs Observed", "Prediction Error by Year"))
+            # Trajectory
+            fig_v1.add_trace(go.Scatter(x=df_cmp["Year"], y=df_cmp["Observed_PD"],
+                mode="lines+markers", name="Observed PD",
+                line=dict(color=C["mint"], width=2.5), marker=dict(size=8, symbol="diamond")), row=1, col=1)
+            fig_v1.add_trace(go.Scatter(x=df_cmp["Year"], y=df_cmp["Model_PD"],
+                mode="lines+markers", name="Model PD",
+                line=dict(color=C["accent2"], width=2.5, dash="dash"), marker=dict(size=7)), row=1, col=1)
+            # Error bars
+            bar_colors = [C["coral"] if e > 0 else C["mint"] for e in df_cmp["Error"]]
+            fig_v1.add_trace(go.Bar(x=df_cmp["Year"], y=df_cmp["Error"] * 100,
+                name="Error (pp)", marker_color=bar_colors, opacity=0.8,
+                hovertemplate="Year: %{x}<br>Error: %{y:.2f} pp<extra></extra>"), row=1, col=2)
+            fig_v1.add_hline(y=0, line_dash="dot", line_color=C["slate"], row=1, col=2)
+            fig_v1.update_layout(**_chart_layout("", 320, legend_override=dict(orientation="h", y=1.1)))
+            fig_v1.update_yaxes(tickformat=".1%", row=1, col=1)
+            fig_v1.update_yaxes(ticksuffix=" pp", title="Error (percentage points)", row=1, col=2)
+            _ax_style(fig_v1, rows=1, cols=2)
+            _plotly_chart_safe(fig_v1, width="stretch")
+
+            # Scatter: predicted vs actual
+            fig_v2 = go.Figure()
+            fig_v2.add_trace(go.Scatter(
+                x=df_cmp["Observed_PD"], y=df_cmp["Model_PD"],
+                mode="markers+text", text=df_cmp["Year"].astype(str), textposition="top center",
+                marker=dict(color=C["accent2"], size=12, line=dict(color=C["white"], width=1)),
+                name="Year",
+                hovertemplate="Observed: %{x:.2%}<br>Model: %{y:.2%}<extra></extra>",
+            ))
+            # Perfect fit line
+            mn = min(df_cmp[["Observed_PD","Model_PD"]].min())
+            mx = max(df_cmp[["Observed_PD","Model_PD"]].max())
+            fig_v2.add_trace(go.Scatter(x=[mn, mx], y=[mn, mx],
+                mode="lines", name="Perfect fit",
+                line=dict(color=C["slate"], dash="dot", width=1.5)))
+            fig_v2.update_layout(**_chart_layout("Predicted vs Observed PD (perfect fit = dotted line)", 300))
+            fig_v2.update_xaxes(title="Observed PD", tickformat=".1%")
+            fig_v2.update_yaxes(title="Model PD", tickformat=".1%")
+            _ax_style(fig_v2)
+            _plotly_chart_safe(fig_v2, width="stretch")
+
+            # Full comparison table
+            st.subheader("📋 Year-by-Year Validation Table")
+            df_display = df_cmp[["Year","Observed_PD","Model_PD","Error","AbsError","RelError"]].copy()
+            df_display.columns = ["Year","Observed PD","Model PD","Error","Abs Error","Rel Error"]
+            st.dataframe(
+                df_display.style
+                    .format({"Observed PD":"{:.3%}","Model PD":"{:.3%}",
+                             "Error":"{:+.3%}","Abs Error":"{:.3%}","Rel Error":"{:.1%}"})
+                    .background_gradient(subset=["Abs Error"], cmap="Reds")
+                    .applymap(lambda v: f"color:{C['coral']}" if isinstance(v,float) and v>0.005
+                              else f"color:{C['mint']}" if isinstance(v,float) and v<-0.005 else "",
+                              subset=["Error"]),
+                width="stretch", hide_index=True
+            )
+
+            # ECL validation if provided
+            if "Observed_ECL" in df_hist.columns:
+                st.subheader("💰 ECL-Level Validation")
+                df_ecl = df_hist.merge(
+                    df_trans_v[df_trans_v["Scenario"]==val_scen].groupby("Year")["ECL_Transition"].max().reset_index(),
+                    on="Year", how="inner"
+                )
+                if not df_ecl.empty:
+                    ecl_rmse = np.sqrt(((df_ecl["ECL_Transition"] - df_ecl["Observed_ECL"])**2).mean())
+                    ecl_bias = (df_ecl["ECL_Transition"] - df_ecl["Observed_ECL"]).mean()
+                    ec1, ec2 = st.columns(2)
+                    ec1.metric("ECL RMSE (₹ Cr)", f"{ecl_rmse:.2f}")
+                    ec2.metric("ECL Bias (₹ Cr)", f"{ecl_bias:+.2f}")
+
+            st.session_state["validation_results"] = {"MAE":mae,"RMSE":rmse,"Bias":bias,"MAPE":mape,"n_years":len(df_cmp)}
+            log_model_run("Backtest", {"scenario":val_scen,"MAE":mae,"RMSE":rmse,"Bias":bias,"n_years":len(df_cmp)})
+            st.success(f"✅ Validation complete · {len(df_cmp)} overlapping years · Scenario: {val_scen}")
+
+            st.caption(
+                "**Next step:** If RMSE > 1%, go to the **Calibration** tab to find optimised α and β_credit "
+                "parameters that minimise error against this observed data."
+            )
+        else:
+            st.info(
+                "Upload a CSV with `Year` and `Observed_PD` columns. "
+                "You can use sector-level NPA ratios from RBI Trend & Progress reports as a proxy "
+                "if company-specific default histories are unavailable."
+            )
+
+    # ============================================================
+    # TAB 10 — CALIBRATION  (improved user guidance)
+    # ============================================================
+with calibration_tab:
+    st.markdown(f"<h2 style='color:{C['white']}'>⚙️ Parameter Calibration</h2>", unsafe_allow_html=True)
+    st.caption("Optimise α (DSCR sensitivity) and β_credit (carbon burden sensitivity) to minimise error against observed default rates")
+
+    if not st.session_state.get("transition_ran", False):
+        st.info("Run Transition Risk Engine first.")
+    else:
+
+        hdata = st.session_state.get("historical_data")
+
+        # --- FIX: strict guard + stop execution ---
+        if hdata is None or not isinstance(hdata, pd.DataFrame):
+            st.info(
+                "Upload historical PD data in the **Validation** tab first. "
+                "The Calibration tab uses that data to find optimal parameters."
+            )
+            st.stop()
+
+        if "Year" not in hdata.columns:
+            st.error("❌ 'Year' column missing in historical data.")
+            st.stop()
+
+        # Clean + enforce numeric year
+        hdata["Year"] = pd.to_numeric(hdata["Year"], errors="coerce")
+        hdata = hdata.dropna(subset=["Year"])
+        # --- END FIX ---
+
+        with st.expander("📋 What does this tab do?", expanded=True):
+            st.markdown(f"""
+            **Purpose:** Find the values of α (DSCR sensitivity) and β_credit (carbon burden sensitivity)
+            that minimise the Root Mean Squared Error between model PD and your observed default rates.
+
+            **How it works:**
+            - The model tests {10*10:,} combinations of α and β_credit values on a grid
+            - For each combination, it computes a model PD using your actual DSCR and carbon burden data
+            - The combination with the lowest RMSE vs your observed PDs is recommended
+
+            **What to do with the results:**
+            - If RMSE improvement > 10%: update α and β_credit in the sidebar sliders or sector parameters
+            - If improvement is 3–10%: consider updating; model is reasonably well-calibrated
+            - If improvement < 3%: the default literature-based parameters are performing well for your data
+
+            **Important:** Calibrated parameters are specific to your dataset. Do not apply parameters
+            calibrated on one sector's data to a different sector without justification.
+            """)
+
+        df_trans_c = st.session_state.get("df_transition")
+        scens_c = sorted(df_trans_c["Scenario"].unique())
+        cal_scen = st.selectbox("Calibrate against scenario", scens_c, key="cal_scen")
+
+        df_mc_agg = (df_trans_c[df_trans_c["Scenario"]==cal_scen]
+            .groupby("Year").agg({"PD_Transition":"max","DSCR":"min","Carbon_Burden":"max"}).reset_index())
+        hdata["Year"] = hdata["Year"].astype(int)
+        df_cc = hdata.merge(df_mc_agg, on="Year", how="inner")
+
+        if df_cc.empty:
+            st.warning("No overlapping years between calibration data and model output.")
+            st.stop()
+
+        # Grid search parameters
+        st.subheader("🔧 Search Grid Configuration")
+        sg1, sg2 = st.columns(2)
+        a_min, a_max = sg1.slider("α range (DSCR sensitivity)", 0.1, 2.0, (0.1, 1.5), step=0.05, key="cal_arange")
+        b_min, b_max = sg2.slider("β_credit range (carbon sensitivity)", 0.1, 2.5, (0.1, 2.0), step=0.05, key="cal_brange")
+        n_steps = st.slider("Grid resolution (steps per axis)", 5, 20, 10, key="cal_steps",
+            help="Higher = more thorough search but slower. 10×10 = 100 combinations.")
+
+        alpha_vals = np.linspace(a_min, a_max, n_steps)
+        beta_vals  = np.linspace(b_min, b_max, n_steps)
+
+        st.caption(f"Grid: {len(alpha_vals)} × {len(beta_vals)} = **{len(alpha_vals)*len(beta_vals):,} combinations** to test")
+
+        if st.button("▶ Run Grid Search Calibration", type="primary"):
+            with st.spinner(f"Searching {len(alpha_vals)*len(beta_vals):,} parameter combinations..."):
+                best_rmse = 999.0
+                best_params = (alpha_vals[len(alpha_vals)//2], beta_vals[len(beta_vals)//2])
+                base_pd_c = df_cc["Observed_PD"].iloc[0]
+                rmse_grid = np.zeros((len(alpha_vals), len(beta_vals)))
+
+                for ai, a in enumerate(alpha_vals):
+                    for bi, b in enumerate(beta_vals):
+                        dg = np.clip(1.5 - df_cc["DSCR"], -4.0, 6.0)
+                        pd_e = np.clip(sigmoid(logit(base_pd_c) + a*dg + b*df_cc["Carbon_Burden"]), PD_FLOOR, PD_CAP)
+                        r = float(np.sqrt(np.mean((pd_e - df_cc["Observed_PD"])**2)))
+                        rmse_grid[ai, bi] = r
+                        if r < best_rmse:
+                            best_rmse = r
+                            best_params = (a, b)
+
+            orig_rmse = st.session_state.get("validation_results", {}).get("RMSE", best_rmse * 1.1)
+            improvement = ((orig_rmse - best_rmse) / max(orig_rmse, 1e-8)) * 100
+
+            # Results
+            if improvement > 10:   sig = "✅ Material improvement"; sig_c = C["mint"]
+            elif improvement > 3:  sig = "⚠️ Moderate improvement"; sig_c = C["amber"]
+            else:                  sig = "ℹ️ Marginal improvement"; sig_c = C["accent2"]
+
+            st.markdown(f"<div style='background:{C['card']};border-left:3px solid {sig_c};border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;color:{sig_c};font-weight:600;'>{sig}</div>", unsafe_allow_html=True)
+
+            cr1, cr2, cr3, cr4 = st.columns(4)
+            cr1.metric("Optimal α", f"{best_params[0]:.3f}", help="Update DSCR sensitivity in sector parameters")
+            cr2.metric("Optimal β_credit", f"{best_params[1]:.3f}", help="Update carbon burden sensitivity in sector parameters")
+            cr3.metric("Calibrated RMSE", f"{best_rmse:.4f}")
+            cr4.metric("RMSE Improvement", f"{improvement:.1f}%", delta_color="normal")
+
+            # RMSE surface heatmap
+            st.subheader("📊 RMSE Surface — Parameter Search Grid")
+            fig_grid = go.Figure(go.Heatmap(
+                z=rmse_grid * 100,
+                x=[f"{b:.2f}" for b in beta_vals],
+                y=[f"{a:.2f}" for a in alpha_vals],
+                colorscale=[[0.0, C["mint"]], [0.4, C["amber"]], [0.7, C["coral"]], [1.0, "#7F0000"]],
+                colorbar=dict(title="RMSE (%)"),
+                hovertemplate="α=%{y}<br>β=%{x}<br>RMSE=%{z:.3f}%<extra></extra>",
+            ))
+            # Mark optimum
+            fig_grid.add_trace(go.Scatter(
+                x=[f"{best_params[1]:.2f}"], y=[f"{best_params[0]:.2f}"],
+                mode="markers", name="Optimum",
+                marker=dict(color=C["white"], size=14, symbol="star",
+                            line=dict(color=C["accent2"], width=2))
+            ))
+            fig_grid.update_layout(**_chart_layout("RMSE (%) by α × β_credit — lower is better", 380,
+                legend_override=dict(orientation="h", y=1.05)))
+            fig_grid.update_xaxes(title="β_credit"); fig_grid.update_yaxes(title="α (DSCR sensitivity)")
+            _plotly_chart_safe(fig_grid, width="stretch")
+
+            # Calibrated vs uncalibrated PD comparison
+            dg_cal = np.clip(1.5 - df_cc["DSCR"], -4.0, 6.0)
+            pd_cal = np.clip(sigmoid(logit(base_pd_c) + best_params[0]*dg_cal + best_params[1]*df_cc["Carbon_Burden"]), PD_FLOOR, PD_CAP)
+            df_cc["PD_Calibrated"] = pd_cal
+
+            fig_cal = go.Figure()
+            fig_cal.add_trace(go.Scatter(x=df_cc["Year"], y=df_cc["Observed_PD"],
+                mode="lines+markers", name="Observed",
+                line=dict(color=C["mint"], width=2.5), marker=dict(size=9, symbol="diamond")))
+            fig_cal.add_trace(go.Scatter(x=df_cc["Year"], y=df_cc["Model_PD"] if "Model_PD" in df_cc.columns else df_cc["PD_Transition"],
+                mode="lines+markers", name="Original Model",
+                line=dict(color=C["coral"], dash="dash", width=2), marker=dict(size=7)))
+            fig_cal.add_trace(go.Scatter(x=df_cc["Year"], y=df_cc["PD_Calibrated"],
+                mode="lines+markers", name="Calibrated Model",
+                line=dict(color=C["accent2"], width=2.5), marker=dict(size=7)))
+            fig_cal.update_layout(**_chart_layout("Calibrated vs Original Model vs Observed PD", 300))
+            fig_cal.update_yaxes(tickformat=".1%")
+            _ax_style(fig_cal)
+            _plotly_chart_safe(fig_cal, width="stretch")
+
+            # Action guidance
+            st.subheader("📌 Recommended Actions")
+            st.markdown(f"""
+            Based on calibration results:
+
+            | Parameter | Current (Sector Default) | Calibrated | Change |
+            |-----------|--------------------------|------------|--------|
+            | α (DSCR sensitivity) | {alpha_dscr:.3f} | **{best_params[0]:.3f}** | {best_params[0]-alpha_dscr:+.3f} |
+            | β_credit (Carbon burden) | {beta_carbon_credit:.3f} | **{best_params[1]:.3f}** | {best_params[1]-beta_carbon_credit:+.3f} |
+
+            {'✅ **Calibration recommended:** RMSE improves by ' + f'{improvement:.1f}%.' + ' Update sector parameters and re-run the Transition Risk Engine.' if improvement > 3 else 'ℹ️ **No action needed:** Default parameters are performing well for your data.'}
+            """)
+
+            st.session_state["calibrated_params"] = {"alpha": best_params[0], "beta_credit": best_params[1], "rmse": best_rmse, "improvement_pct": improvement}
+            log_model_run("Calibration", {"scenario": cal_scen, "alpha": best_params[0], "beta": best_params[1], "rmse": best_rmse, "improvement_pct": improvement})
+
+# ============================================================
+# GET ACCESS TAB — Phase 1 Lead Capture & Product Info
 # ============================================================
 with access_tab:
     import urllib.parse
 
-    st.markdown(f"<h2 style='color:{C['white']};margin-bottom:4px;'>🚀 Request Pilot Access</h2>", unsafe_allow_html=True)
-    st.caption("Move from fictional demo to your own company / portfolio analysis")
+    st.markdown(f"<h2 style='color:{C['white']};margin-bottom:4px;'>🚀 Get Full Access to ICCRE</h2>",
+                unsafe_allow_html=True)
+    st.caption("Free pilot · Professional · Enterprise — Find the right tier for your team")
 
+    # ── Value banner ─────────────────────────────────────────
     st.markdown(f"""
-    <div style="background:linear-gradient(135deg,{C['bg_mid']},{C['card']});border:1px solid {C['accent']};border-radius:12px;padding:24px 28px;margin-bottom:20px;">
-      <div style="font-size:18px;font-weight:700;color:{C['white']};margin-bottom:6px;">What unlocks in a private pilot</div>
-      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;">
-        <div style="flex:1;min-width:210px;background:{C['bg_dark']};border:1px solid {C['bg_ocean']};border-radius:10px;padding:14px;">
-          <div style="font-size:14px;font-weight:700;color:{C['accent2']};">Custom company analysis</div>
-          <div style="font-size:11px;color:{C['slate']};line-height:1.7;margin-top:6px;">Use your own financials, emissions, asset register and BRSR inputs.</div>
+    <div style="background:linear-gradient(135deg,{C['bg_mid']},{C['card']});
+                border:1px solid {C['accent']};border-radius:12px;
+                padding:24px 28px;margin-bottom:20px;">
+      <div style="font-size:18px;font-weight:700;color:{C['white']};margin-bottom:6px;">
+        Why teams choose ICCRE
+      </div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:12px;">
+        <div style="flex:1;min-width:180px;">
+          <div style="font-size:24px;font-weight:700;color:{C['accent2']};">20 min</div>
+          <div style="font-size:11px;color:{C['slate']};">Full NGFS scenario analysis<br>vs 8 weeks with consultants</div>
         </div>
-        <div style="flex:1;min-width:210px;background:{C['bg_dark']};border:1px solid {C['bg_ocean']};border-radius:10px;padding:14px;">
-          <div style="font-size:14px;font-weight:700;color:{C['mint']};">Portfolio view</div>
-          <div style="font-size:11px;color:{C['slate']};line-height:1.7;margin-top:6px;">Assess multiple borrowers, sectors and exposure concentrations.</div>
+        <div style="flex:1;min-width:180px;">
+          <div style="font-size:24px;font-weight:700;color:{C['mint']};">₹0</div>
+          <div style="font-size:11px;color:{C['slate']};">Entry cost vs ₹40–80L<br>for a Big-4 engagement</div>
         </div>
-        <div style="flex:1;min-width:210px;background:{C['bg_dark']};border:1px solid {C['bg_ocean']};border-radius:10px;padding:14px;">
-          <div style="font-size:14px;font-weight:700;color:{C['amber']};">Governance pack</div>
-          <div style="font-size:11px;color:{C['slate']};line-height:1.7;margin-top:6px;">Get full report exports, documentation, assumptions review and board-ready outputs.</div>
+        <div style="flex:1;min-width:180px;">
+          <div style="font-size:24px;font-weight:700;color:{C['amber']};">100%</div>
+          <div style="font-size:11px;color:{C['slate']};">India-native: INR, BRSR Core,<br>RBI 2024, NGFS aligned</div>
+        </div>
+        <div style="flex:1;min-width:180px;">
+          <div style="font-size:24px;font-weight:700;color:{C['coral']};">0</div>
+          <div style="font-size:11px;color:{C['slate']};">Direct Indian competitors<br>in quantitative credit risk</div>
         </div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("""
-    **Best-fit pilot users**
-    - Banks / NBFCs evaluating climate-adjusted credit risk
-    - ESG and climate-risk consultants building client reports
-    - CFO / treasury teams assessing transition and physical exposure
-    - Investors and accelerators evaluating climate-finance infrastructure
-    """)
+    # ── Pricing tiers ─────────────────────────────────────────
+    st.markdown(f"<h3 style='color:{C['white']};'>Access Tiers</h3>", unsafe_allow_html=True)
 
-    with st.form("pilot_request_form", clear_on_submit=False):
-        c1, c2 = st.columns(2)
-        req_name = c1.text_input("Name", value=st.session_state.get("demo_lead", {}).get("name", ""))
-        req_email = c2.text_input("Work Email", value=st.session_state.get("demo_lead", {}).get("email", ""))
-        req_org = c1.text_input("Organisation", value=st.session_state.get("demo_lead", {}).get("organisation", ""))
-        req_use = c2.selectbox("Pilot use case", ["Bank / NBFC portfolio", "Single company analysis", "ESG consulting", "Investor diligence", "Partnership", "Other"])
-        req_msg = st.text_area("What would you like to evaluate in a pilot?", height=100)
-        submit_req = st.form_submit_button("Send Pilot Request", type="primary", width="stretch")
+    tier_col1, tier_col2, tier_col3 = st.columns(3)
 
-    if submit_req:
-        lead = {
-            "name": req_name.strip(),
-            "email": req_email.strip(),
-            "organisation": req_org.strip(),
-            "role": st.session_state.get("demo_lead", {}).get("role", ""),
-            "purpose": f"Pilot request: {req_use}",
-            "notes": req_msg.strip(),
-            "demo_company": DEMO_DATASET["company_name"],
-            "model_version": MODEL_VERSION,
-        }
-        if not _valid_email(req_email):
-            st.error("Please enter a valid work email.")
-        elif not req_org.strip():
-            st.error("Please enter your organisation.")
+    with tier_col1:
+        st.markdown(f"""
+        <div style="background:{C['card']};border:1px solid {C['mint']};border-radius:10px;
+                    padding:20px;height:340px;position:relative;">
+          <div style="font-size:16px;font-weight:700;color:{C['mint']};margin-bottom:4px;">Free Tier</div>
+          <div style="font-size:28px;font-weight:800;color:{C['white']};margin-bottom:2px;">₹ 0</div>
+          <div style="font-size:11px;color:{C['slate']};margin-bottom:14px;">Forever free · Single user</div>
+          <div style="font-size:11px;color:{C['off_white']};line-height:2.0;">
+            ✓ All 11 analytics modules<br>
+            ✓ All 3 NGFS scenarios<br>
+            ✓ Excel + JSON export<br>
+            ✓ AI narrative (Groq key needed)<br>
+            ✓ Methodology documentation<br>
+            ✓ No time limit
+          </div>
+          <div style="position:absolute;bottom:16px;left:16px;right:16px;
+                      font-size:10px;color:{C['slate']};text-align:center;">
+            Currently running on this tier
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with tier_col2:
+        st.markdown(f"""
+        <div style="background:{C['card']};border:2px solid {C['amber']};border-radius:10px;
+                    padding:20px;height:340px;position:relative;">
+          <div style="position:absolute;top:-12px;left:50%;transform:translateX(-50%);
+                      background:{C['amber']};color:{C['bg_dark']};font-size:9px;font-weight:700;
+                      padding:3px 12px;border-radius:12px;letter-spacing:.06em;white-space:nowrap;">
+            MOST POPULAR
+          </div>
+          <div style="font-size:16px;font-weight:700;color:{C['amber']};margin-bottom:4px;">Professional</div>
+          <div style="font-size:28px;font-weight:800;color:{C['white']};margin-bottom:2px;">₹ 2–5 L</div>
+          <div style="font-size:11px;color:{C['slate']};margin-bottom:14px;">Per year · Up to 3 users</div>
+          <div style="font-size:11px;color:{C['off_white']};line-height:2.0;">
+            ✓ Everything in Free<br>
+            ✓ Custom sector calibration<br>
+            ✓ Calibration with your data<br>
+            ✓ Quarterly parameter updates<br>
+            ✓ Priority email support (4 hr)<br>
+            ✓ BRSR filing language support
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with tier_col3:
+        st.markdown(f"""
+        <div style="background:{C['card']};border:1px solid {C['coral']};border-radius:10px;
+                    padding:20px;height:340px;">
+          <div style="font-size:16px;font-weight:700;color:{C['coral']};margin-bottom:4px;">Enterprise</div>
+          <div style="font-size:28px;font-weight:800;color:{C['white']};margin-bottom:2px;">₹ 12–18 L</div>
+          <div style="font-size:11px;color:{C['slate']};margin-bottom:14px;">Per year · Unlimited users</div>
+          <div style="font-size:11px;color:{C['off_white']};line-height:2.0;">
+            ✓ Everything in Professional<br>
+            ✓ API access (v1.4)<br>
+            ✓ White-label / custom branding<br>
+            ✓ Private cloud deployment<br>
+            ✓ Annual model validation report<br>
+            ✓ Monthly strategy session
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
+
+    # ── Contact / Request Form ────────────────────────────────
+    st.markdown(f"<h3 style='color:{C['white']};'>Request a Demo or Access</h3>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='font-size:13px;color:{C['slate']};margin-bottom:16px;'>"
+        f"Fill in your details and we will get back to you within 24 hours with a personalised demo slot or access link.</div>",
+        unsafe_allow_html=True
+    )
+
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        req_name  = st.text_input("Your Name *", placeholder="Rajesh Kumar", key="req_name")
+        req_email = st.text_input("Work Email *", placeholder="rk@yourbank.com", key="req_email")
+        req_org   = st.text_input("Organisation *", placeholder="XYZ Bank / ABC Corp", key="req_org")
+    with fc2:
+        req_role  = st.selectbox("Your Role", [
+            "— Select —",
+            "Bank CRO / Risk Head",
+            "Credit Risk Analyst",
+            "CFO / Finance Director",
+            "Sustainability / ESG Officer",
+            "ESG Consultant",
+            "CA / CS / Compliance",
+            "Researcher / Academic",
+            "Other",
+        ], key="req_role")
+        req_tier  = st.selectbox("Interested Tier", [
+            "Free Pilot (just explore)",
+            "Professional (₹ 2–5 L/yr)",
+            "Enterprise (₹ 12–18 L/yr)",
+            "Not sure — need a demo first",
+        ], key="req_tier")
+        req_sector = st.selectbox("Primary Sector of Interest", [
+            "Steel", "Power", "Cement", "Oil & Gas", "Manufacturing",
+            "Multiple sectors", "Other",
+        ], key="req_sector")
+
+    req_msg = st.text_area(
+        "What do you want to use ICCRE for? (optional)",
+        placeholder=(
+            "E.g.: We need to run NGFS scenario analysis for our ICAAP submission. "
+            "We have 15 large Steel and Power borrowers we want to stress-test..."
+        ),
+        height=80,
+        key="req_msg",
+    )
+
+    # Build mailto link
+    if st.button("📨 Send Request", type="primary", width="content"):
+        if not req_name or not req_email or not req_org or req_role == "— Select —":
+            st.error("Please fill in Name, Email, Organisation, and Role before submitting.")
         else:
-            _save_demo_lead(lead)
-            st.success("Pilot request recorded. We will use the submitted contact details for follow-up.")
-            mailto = f"mailto:{CONTACT_EMAIL}?subject=ICCRE Pilot Request&body=" + urllib.parse.quote(
-                f"Name: {req_name}\nEmail: {req_email}\nOrganisation: {req_org}\nUse case: {req_use}\n\n{req_msg}"
+            subject = f"ICCRE Access Request — {req_role} at {req_org}"
+            body = (
+                f"Name: {req_name}\n"
+                f"Email: {req_email}\n"
+                f"Organisation: {req_org}\n"
+                f"Role: {req_role}\n"
+                f"Tier Interest: {req_tier}\n"
+                f"Sector: {req_sector}\n\n"
+                f"Message:\n{req_msg or 'No message provided.'}\n\n"
+                f"---\nSent from ICCRE v{MODEL_VERSION} Get Access tab"
             )
-            st.markdown(f"[Open email draft to ICCRE]({mailto})")
+            mailto = (
+                f"mailto:{CONTACT_EMAIL}"
+                f"?subject={urllib.parse.quote(subject)}"
+                f"&body={urllib.parse.quote(body)}"
+            )
+            st.markdown(
+                f"""
+                <div style="background:{C['card']};border:1px solid {C['mint']};border-radius:10px;
+                            padding:20px;text-align:center;">
+                  <div style="font-size:24px;margin-bottom:8px;">✅</div>
+                  <div style="font-size:15px;font-weight:600;color:{C['mint']};margin-bottom:6px;">
+                    Ready to send!
+                  </div>
+                  <div style="font-size:12px;color:{C['slate']};margin-bottom:14px;">
+                    Click the button below to open your email client with the request pre-filled.
+                    We respond within 24 hours.
+                  </div>
+                  <a href="{mailto}"
+                     style="background:{C['accent']};color:{C['bg_dark']};padding:10px 28px;
+                            border-radius:8px;font-weight:700;font-size:13px;text-decoration:none;
+                            display:inline-block;">
+                    ✉ Open Email to Send Request
+                  </a>
+                  <div style="font-size:10px;color:{C['bg_ocean']};margin-top:10px;">
+                    Or email directly: {CONTACT_EMAIL}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-    st.warning("Public demo uses fictional data and is not financial, credit, investment, legal or regulatory advice.")
+    # ── Who uses ICCRE ────────────────────────────────────────
+    st.divider()
+    st.markdown(f"<h3 style='color:{C['white']};'>Built for</h3>", unsafe_allow_html=True)
+
+    who_col1, who_col2, who_col3, who_col4 = st.columns(4)
+    for col, emoji, title, desc in [
+        (who_col1, "🏦", "Indian Banks", "ICAAP climate overlay · RBI stress test · IFRS 9 ECL · Borrower climate ratings"),
+        (who_col2, "🏭", "Listed Corporates", "SEBI BRSR Core filing · Net Zero target modelling · Lender climate questionnaires"),
+        (who_col3, "📊", "ESG Consultants", "Multi-client analysis · Regulatory filing support · AI narrative generation"),
+        (who_col4, "🎓", "Researchers", "India-specific climate credit models · Free academic access · Open methodology"),
+    ]:
+        with col:
+            st.markdown(f"""
+            <div style="background:{C['card']};border:1px solid {C['bg_ocean']};border-radius:8px;
+                        padding:14px;text-align:center;height:160px;">
+              <div style="font-size:26px;margin-bottom:6px;">{emoji}</div>
+              <div style="font-size:12px;font-weight:700;color:{C['white']};margin-bottom:6px;">{title}</div>
+              <div style="font-size:10px;color:{C['slate']};line-height:1.6;">{desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ── Footer strip ──────────────────────────────────────────
+    st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="background:{C['bg_mid']};border-top:1px solid {C['bg_ocean']};
+                padding:16px 20px;border-radius:8px;
+                display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center;">
+      <div>
+        <span style="font-size:14px;font-weight:700;color:{C['accent2']};">ICCRE v{MODEL_VERSION}</span>
+        <span style="font-size:11px;color:{C['slate']};margin-left:12px;">{PRODUCT_TAGLINE}</span>
+      </div>
+      <div style="display:flex;gap:16px;align-items:center;">
+        <a href="mailto:{CONTACT_EMAIL}" style="font-size:11px;color:{C['slate']};text-decoration:none;">
+          ✉ {CONTACT_EMAIL}
+        </a>
+        <a href="{LINKEDIN_URL}" style="font-size:11px;color:{C['slate']};text-decoration:none;">
+          LinkedIn
+        </a>
+        <span style="font-size:10px;color:{C['bg_ocean']};">
+          Build {MODEL_BUILD_DATE} · NGFS Phase III 2023 · ISSB S2 · RBI 2024
+        </span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
