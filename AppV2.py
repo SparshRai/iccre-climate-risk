@@ -1,4 +1,4 @@
-MODEL_VERSION    = "1.7.0-productized-market-ready"
+MODEL_VERSION    = "1.7.1-productized-market-ready-fix"
 PARAMETER_VERSION = "ClimateParams_v1.7_workflow_assumption_governed"
 NGFS_DATA_VERSION = "NGFS_PhaseIII_2023"
 ENGINE_BUILD      = "IntegratedClimateCreditEngine"
@@ -994,41 +994,41 @@ code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; b
 
 
 /* ── ICCRE v1.7 PRODUCTIZED WORKSPACE UI ─────────────────── */
-.workflow-shell {
+.workflow-shell {{
     background: rgba(13,59,74,.82);
     border: 1px solid #115E6D;
     border-radius: 16px;
     padding: 18px;
     margin: 12px 0 18px;
     box-shadow: 0 18px 36px rgba(2, 6, 23, .18);
-}
-.workflow-step {
+}}
+.workflow-step {{
     background: rgba(6,47,46,.76);
     border: 1px solid rgba(34,211,238,.22);
     border-radius: 14px;
     padding: 14px;
     min-height: 118px;
-}
-.workflow-step .step-number {
+}}
+.workflow-step .step-number {{
     color: #22D3EE !important;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 11px;
     font-weight: 800;
     letter-spacing: .08em;
-}
-.workflow-step .step-title {
+}}
+.workflow-step .step-title {{
     color: #FFFFFF !important;
     font-size: 15px;
     font-weight: 800;
     margin-top: 4px;
-}
-.workflow-step .step-body {
+}}
+.workflow-step .step-body {{
     color: #94A3B8 !important;
     font-size: 12px;
     line-height: 1.38;
     margin-top: 6px;
-}
-.trust-ribbon {
+}}
+.trust-ribbon {{
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
@@ -1037,8 +1037,8 @@ code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; b
     border-radius: 14px;
     padding: 10px 12px;
     margin: 10px 0 16px;
-}
-.trust-chip {
+}}
+.trust-chip {{
     background: rgba(13,59,74,.92);
     border: 1px solid rgba(17,94,109,.95);
     border-radius: 999px;
@@ -1046,52 +1046,52 @@ code {{ background: {C["bg_dark"]} !important; color: {C["amber"]} !important; b
     color: #E6F1F5 !important;
     font-size: 11px;
     font-weight: 700;
-}
-.verdict-card {
+}}
+.verdict-card {{
     background: linear-gradient(135deg, rgba(13,59,74,.98) 0%, rgba(11,77,75,.96) 100%);
     border: 1px solid rgba(34,211,238,.35);
     border-left: 6px solid #22D3EE;
     border-radius: 16px;
     padding: 18px;
     margin: 12px 0 16px;
-}
-.verdict-title {
+}}
+.verdict-title {{
     color: #FFFFFF !important;
     font-size: 20px;
     font-weight: 900;
     letter-spacing: -.01em;
-}
-.verdict-subtitle {
+}}
+.verdict-subtitle {{
     color: #94A3B8 !important;
     font-size: 13px;
     line-height: 1.45;
     margin-top: 6px;
-}
-.action-card {
+}}
+.action-card {{
     background: rgba(13,59,74,.80);
     border: 1px solid rgba(17,94,109,.9);
     border-radius: 14px;
     padding: 13px 14px;
     margin-bottom: 10px;
-}
-.action-title {
+}}
+.action-title {{
     color: #FFFFFF !important;
     font-size: 13px;
     font-weight: 800;
-}
-.action-body {
+}}
+.action-body {{
     color: #94A3B8 !important;
     font-size: 12px;
     margin-top: 4px;
     line-height: 1.4;
-}
-.report-section-card {
+}}
+.report-section-card {{
     background: rgba(13,59,74,.70);
     border: 1px solid rgba(17,94,109,.75);
     border-radius: 14px;
     padding: 14px;
     margin-bottom: 12px;
-}
+}}
 
 /* ── DEMO-1.2 SIDEBAR CONTRAST FIX ───────────────────────── */
 section[data-testid="stSidebar"] .stButton > button,
